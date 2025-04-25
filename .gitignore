@@ -39,7 +39,7 @@ venv.bak/
 # Jupyter Notebook
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
-*.ipynb
+# *.ipynb
 
 # VS Code
 .vscode/
