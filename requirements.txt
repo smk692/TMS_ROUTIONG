@@ -1,0 +1,9 @@
+pymysql
+sqlalchemy
+pandas
+jupyter
+matplotlib
+folium
+ortools
+scikit-learn
+geopy
