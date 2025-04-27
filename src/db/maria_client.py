@@ -12,7 +12,7 @@ def fetch_orders():
 
     # Prepare parameters
     date = '2025-04-17'
-    region = f"경기도%"
+    region = f"경기도 수원%"
 
     query = """
     SELECT DISTINCT I.invoice_no    AS id

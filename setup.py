@@ -12,5 +12,11 @@ setup(
         "geopy",
         "scikit-learn",
         "numpy",
+        "ortools",
+        "folium",
+        "matplotlib",
+        "jupyter",
+        "pandas",
+        "ipykernel",
     ],
 )

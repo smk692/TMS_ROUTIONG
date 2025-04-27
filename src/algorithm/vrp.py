@@ -1,121 +1,201 @@
-import math
+# src/algorithm/vrp.py
+from typing import List, Optional
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+from src.model.vehicle import Vehicle
+from src.model.delivery_point import DeliveryPoint
+from src.model.route import Route, RoutePoint
+from src.core.logger import setup_logger
+from src.core.distance_matrix import DistanceMatrix
+from datetime import timedelta
 
+logger = setup_logger('vrp')
+distance_matrix = DistanceMatrix()
 
-def solve_vrp(vehicles, orders):
-    """
-    Solve a VRP given vehicles and orders.
-    vehicles: list of dicts with 'capacity'
-    orders: list of dicts with 'latitude', 'longitude', 'demand'
-    """
-    if not vehicles or not orders:
-        print("🚫 차량 또는 주문 데이터가 없습니다.")
-        return
-    locations = [[o["latitude"], o["longitude"]] for o in orders]
-    demands = [o["demand"] for o in orders]
-    depot = 0
-    distance_matrix = compute_euclidean_distance_matrix(locations)
+class VRPSolver:
+    """VRP 문제 해결을 위한 클래스"""
+    def __init__(self, vehicles: List[Vehicle], delivery_points: List[DeliveryPoint]):
+        self.vehicles = vehicles
+        self.delivery_points = delivery_points
+        self.distance_matrix = distance_matrix.compute_matrix(delivery_points)
+        self.manager = None
+        self.routing = None
 
-    num_vehicles = len(vehicles)
-    capacities = [v["capacity"] for v in vehicles]
+    def validate_input(self) -> bool:
+        """입력 데이터 검증"""
+        if not self.vehicles:
+            logger.error("차량 데이터가 없습니다.")
+            return False
+        if not self.delivery_points:
+            logger.error("배송지점 데이터가 없습니다.")
+            return False
+            
+        # 차량 용량 검증
+        total_volume = sum(p.volume for p in self.delivery_points)
+        total_weight = sum(p.weight for p in self.delivery_points)
+        total_vehicle_volume = sum(v.capacity.volume for v in self.vehicles)
+        total_vehicle_weight = sum(v.capacity.weight for v in self.vehicles)
+        
+        if total_volume > total_vehicle_volume:
+            logger.error(f"총 화물 부피({total_volume})가 차량 용량({total_vehicle_volume})을 초과합니다.")
+            return False
+        if total_weight > total_vehicle_weight:
+            logger.error(f"총 화물 무게({total_weight})가 차량 용량({total_vehicle_weight})을 초과합니다.")
+            return False
+            
+        return True
+    
+    def setup_model(self):
+        """OR-Tools 모델 설정"""
+        self.manager = pywrapcp.RoutingIndexManager(
+            len(self.delivery_points),
+            len(self.vehicles),
+            0  # depot
+        )
+        self.routing = pywrapcp.RoutingModel(self.manager)
+        
+        # 거리 콜백 등록
+        def distance_callback(from_index, to_index):
+            from_node = self.manager.IndexToNode(from_index)
+            to_node = self.manager.IndexToNode(to_index)
+            return int(self.distance_matrix[from_node][to_node] * 1e6)
+            
+        transit_callback_index = self.routing.RegisterTransitCallback(distance_callback)
+        self.routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
+        
+        # 용량 제약 추가
+        def demand_callback(from_index):
+            point = self.delivery_points[self.manager.IndexToNode(from_index)]
+            return int(point.volume * 1000)
+            
+        demand_callback_index = self.routing.RegisterUnaryTransitCallback(demand_callback)
+        self.routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,
+            [int(v.capacity.volume * 1000) for v in self.vehicles],
+            True,
+            "Capacity"
+        )
+        
+        # 시간 제약 추가
+        time_callback_index = self.routing.RegisterTransitCallback(
+            lambda from_index, to_index: int(distance_callback(from_index, to_index) / 1e6 * 60)  # 분 단위
+        )
+        self.routing.AddDimension(
+            time_callback_index,
+            30,  # 허용 대기 시간
+            480,  # 최대 근무 시간 (8시간)
+            False,
+            "Time"
+        )
+    
+    def solve(self) -> Optional[List[Route]]:
+        """VRP 해결"""
+        try:
+            logger.info("VRP 해결 시작")
+            
+            if not self.validate_input():
+                return None
+                
+            self.setup_model()
+            
+            # 해 찾기 파라미터 최적화
+            search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+            
+            # 첫 번째 해결책 전략 개선
+            search_parameters.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
+            )
+            
+            # 메타휴리스틱 알고리즘 개선
+            search_parameters.local_search_metaheuristic = (
+                routing_enums_pb2.LocalSearchMetaheuristic.SIMULATED_ANNEALING
+            )
+            
+            # 시간 제한 및 기타 파라미터 조정
+            search_parameters.time_limit.seconds = 15  # 시간 제한 감소
+            search_parameters.solution_limit = 100    # 해의 개수 제한
+            search_parameters.log_search = True       # 검색 로깅 활성화
+            
+            # 병렬 처리 설정
+            search_parameters.num_search_workers = 4  # 작업자 수 설정
+            
+            solution = self.routing.SolveWithParameters(search_parameters)
+            
+            if not solution:
+                logger.error("해를 찾을 수 없습니다.")
+                return None
+                
+            # 결과 변환
+            routes = self._convert_solution_to_routes(solution)
+            
+            logger.info(f"VRP 해결 완료: {len(routes)}개 경로 생성")
+            return routes
+            
+        except Exception as e:
+            logger.error(f"VRP 해결 중 오류 발생: {str(e)}")
+            raise
+    
+    def _convert_solution_to_routes(self, solution) -> List[Route]:
+        """OR-Tools 해를 Route 객체로 변환"""
+        routes = []
+        for vehicle_id in range(len(self.vehicles)):
+            vehicle = self.vehicles[vehicle_id]
+            route_points = []
+            
+            index = self.routing.Start(vehicle_id)
+            if self.routing.IsEnd(index):
+                continue
+                
+            current_time = vehicle.start_time
+            cumulative_distance = 0.0
+            
+            while not self.routing.IsEnd(index):
+                node_index = self.manager.IndexToNode(index)
+                point = self.delivery_points[node_index]
+                
+                route_point = RoutePoint(
+                    point=point,
+                    arrival_time=current_time,
+                    departure_time=current_time + timedelta(minutes=point.service_time),
+                    cumulative_distance=cumulative_distance,
+                    cumulative_load={
+                        'volume': point.volume,
+                        'weight': point.weight
+                    }
+                )
+                route_points.append(route_point)
+                
+                current_time += timedelta(minutes=point.service_time)
+                next_index = solution.Value(self.routing.NextVar(index))
+                
+                if not self.routing.IsEnd(next_index):
+                    next_node = self.manager.IndexToNode(next_index)
+                    dist = self.distance_matrix[node_index][next_node]
+                    cumulative_distance += dist
+                    current_time += timedelta(minutes=int(dist * 60))  # km/h 기준
+                
+                index = next_index
+            
+            if route_points:
+                route = Route(
+                    id=f"R{vehicle_id}",
+                    vehicle=vehicle,
+                    points=route_points,
+                    total_distance=cumulative_distance,
+                    total_time=int((current_time - vehicle.start_time).total_seconds() / 60),
+                    total_load={
+                        'volume': sum(p.point.volume for p in route_points),
+                        'weight': sum(p.point.weight for p in route_points)
+                    },
+                    start_time=vehicle.start_time,
+                    end_time=current_time,
+                    status='PLANNED'
+                )
+                routes.append(route)
+        
+        return routes
 
-    manager = pywrapcp.RoutingIndexManager(len(locations), num_vehicles, depot)
-    routing = pywrapcp.RoutingModel(manager)
-
-    def distance_callback(from_index, to_index):
-        return distance_matrix[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
-    transit_cb = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_cb)
-
-    def demand_callback(from_index):
-        return demands[manager.IndexToNode(from_index)]
-    demand_cb = routing.RegisterUnaryTransitCallback(demand_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        demand_cb,
-        0,
-        capacities,
-        True,
-        "Capacity"
-    )
-
-    search_params = pywrapcp.DefaultRoutingSearchParameters()
-    search_params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC
-    search_params.time_limit.seconds = 10
-
-    solution = routing.SolveWithParameters(search_params)
-
-    if solution:
-        for vehicle_id in range(num_vehicles):
-            index = routing.Start(vehicle_id)
-            route = []
-            route_load = 0
-            while not routing.IsEnd(index):
-                node = manager.IndexToNode(index)
-                route.append(node)
-                route_load += demands[node]
-                index = solution.Value(routing.NextVar(index))
-            route.append(manager.IndexToNode(index))
-            print(f"🚚 차량 {vehicle_id}: 경로={route}, 적재량={route_load}")
-    else:
-        print("❌ VRP 해를 찾지 못했습니다.")
-
-
-
-
-def compute_euclidean_distance_matrix(locations):
-    size = len(locations)
-    matrix = {}
-    for from_idx in range(size):
-        matrix[from_idx] = {}
-        for to_idx in range(size):
-            if from_idx == to_idx:
-                matrix[from_idx][to_idx] = 0
-            else:
-                dx = locations[from_idx][0] - locations[to_idx][0]
-                dy = locations[from_idx][1] - locations[to_idx][1]
-                matrix[from_idx][to_idx] = int(math.hypot(dx, dy) * 1e6)
-    return matrix
-
-
-def solve_cvrp(cluster, vehicle_capacity=50):
-    locations = [[p["latitude"], p["longitude"]] for p in cluster]
-    demands = [1] * len(cluster)
-    depot = 0
-    distance_matrix = compute_euclidean_distance_matrix(locations)
-
-    manager = pywrapcp.RoutingIndexManager(len(distance_matrix), 1, depot)
-    routing = pywrapcp.RoutingModel(manager)
-
-    def distance_callback(from_index, to_index):
-        return distance_matrix[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
-
-    transit_callback_index = routing.RegisterTransitCallback(distance_callback)
-    routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-
-    def demand_callback(from_index):
-        return demands[manager.IndexToNode(from_index)]
-
-    demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-    routing.AddDimensionWithVehicleCapacity(
-        demand_callback_index,
-        0,
-        [vehicle_capacity],
-        True,
-        "Capacity"
-    )
-
-    search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-    search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-
-    solution = routing.SolveWithParameters(search_parameters)
-
-    if solution:
-        index = routing.Start(0)
-        route = []
-        while not routing.IsEnd(index):
-            route.append(manager.IndexToNode(index))
-            index = solution.Value(routing.NextVar(index))
-        route.append(manager.IndexToNode(index))
-        print(f"🚚 최적 경로: {route}")
-    else:
-        print("❌ 경로를 찾을 수 없습니다.")
+def solve_vrp(vehicles: List[Vehicle], delivery_points: List[DeliveryPoint]) -> Optional[List[Route]]:
+    """VRP 해결을 위한 편의 함수"""
+    solver = VRPSolver(vehicles, delivery_points)
+    return solver.solve()
