@@ -1,0 +1,42 @@
+
+        Clustering Performance Report
+        Generated at: 2025-04-29 00:34:34.212335
+        
+        Overall Statistics:
+        ------------------
+        Total Runs: 3
+        Success Rate: 100.00%
+        Average Execution Time: 0.35s
+        Average Memory Usage: 1.63MB
+        
+        Strategy Distribution:
+        --------------------
+        strategy_name
+enhanced_kmeans    3
+        
+        Performance Metrics:
+        ------------------
+        Execution Time:
+          Mean: 0.35s
+          Std: 0.00s
+          Min: 0.35s
+          Max: 0.35s
+        
+        Memory Usage:
+          Mean: 1.63MB
+          Std: 0.41MB
+          Min: 1.23MB
+          Max: 2.05MB
+        
+        Cluster Statistics:
+        -----------------
+        Average Number of Clusters: 5.00
+        Average Points per Cluster: 10.00
+        
+        Recent Performance (Last 5 runs):
+        ------------------------------
+             strategy_name  execution_time  memory_usage  success
+0  enhanced_kmeans        0.350707      1.230544     True
+1  enhanced_kmeans        0.350692      1.601441     True
+2  enhanced_kmeans        0.352182      2.048418     True
+        

@@ -302,58 +302,50 @@ class EnhancedKMeansStrategy(ClusteringStrategy):
 
     def _assign_to_clusters(self, points: List[DeliveryPoint], centers: List[DeliveryPoint], 
                           vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """
-        포인트들을 가장 적합한 클러스터에 할당합니다.
-        """
+        """개선된 클러스터 할당"""
         clusters = [[] for _ in range(len(centers))]
+        unassigned_points = [p for p in points if p not in centers]
         
-        # 중심점들을 각 클러스터에 먼저 할당
+        # 중심점들을 각 클러스터에 할당
         for i, center in enumerate(centers):
             clusters[i].append(center)
         
-        # 남은 포인트들을 우선순위와 거리를 고려하여 할당
-        remaining_points = [p for p in points if p not in centers]
-        remaining_points.sort(key=lambda p: (-p.priority, p.id))  # 우선순위 높은 순
-
-        for point in remaining_points:
+        # 우선순위로 정렬
+        sorted_points = sorted(unassigned_points, key=lambda p: (-p.priority, p.id))
+        
+        # 벡터화된 거리 계산을 위한 배열
+        center_coords = np.array([[c.latitude, c.longitude] for c in centers])
+        
+        for point in sorted_points:
+            point_coord = np.array([[point.latitude, point.longitude]])
+            distances = cdist(point_coord, center_coords)[0]
+            
+            # 각 클러스터에 대한 비용 계산
             best_cluster_idx = -1
             min_cost = float('inf')
             
-            # 각 클러스터에 대해 비용 계산
             for i, (cluster, vehicle) in enumerate(zip(clusters, vehicles)):
                 if not self._can_add_to_cluster(point, cluster, vehicle):
                     continue
                 
-                # 거리 기반 비용
-                dist = self._get_distance(point, centers[i])
-                
-                # 클러스터 크기 페널티
-                size_penalty = len(cluster) / len(points)
-                
-                # 용량 사용률 페널티
+                # 거리, 용량, 우선순위를 고려한 비용
                 volume_ratio = sum(p.volume for p in cluster) / vehicle.capacity.volume
                 weight_ratio = sum(p.weight for p in cluster) / vehicle.capacity.weight
-                capacity_penalty = max(volume_ratio, weight_ratio)
+                priority_count = sum(1 for p in cluster if p.priority > 2)
                 
-                # 총 비용
-                cost = dist * (1 + size_penalty + capacity_penalty)
+                cost = distances[i] * (1 + volume_ratio + weight_ratio) + priority_count
                 
                 if cost < min_cost:
                     min_cost = cost
                     best_cluster_idx = i
             
-            # 가장 적합한 클러스터에 할당
             if best_cluster_idx != -1:
                 clusters[best_cluster_idx].append(point)
             else:
-                # 어떤 클러스터에도 할당할 수 없는 경우
                 # 가장 여유 있는 클러스터에 할당
-                best_idx = self._find_most_available_cluster(clusters, vehicles)
-                if best_idx is not None:
-                    clusters[best_idx].append(point)
-                else:
-                    # 모든 시도 실패 시 로그 기록
-                    logger.warning(f"포인트 {point.id} 할당 실패: 적합한 클러스터 없음")
+                best_cluster_idx = self._find_most_available_cluster(clusters, vehicles)
+                if best_cluster_idx is not None:
+                    clusters[best_cluster_idx].append(point)
         
         return clusters
 
@@ -369,55 +361,36 @@ class EnhancedKMeansStrategy(ClusteringStrategy):
 
     def _can_add_to_cluster(self, point: DeliveryPoint, cluster: List[DeliveryPoint], 
                            vehicle: Vehicle) -> bool:
-        """
-        포인트를 클러스터에 추가할 수 있는지 검사합니다.
-        """
-        # 현재 사용량 계산
-        current_volume = sum(p.volume for p in cluster)
-        current_weight = sum(p.weight for p in cluster)
+        """개선된 클러스터 용량 검사"""
+        total_volume = sum(p.volume for p in cluster) + point.volume
+        total_weight = sum(p.weight for p in cluster) + point.weight
         
-        # 추가 시 사용량
-        new_volume = current_volume + point.volume
-        new_weight = current_weight + point.weight
+        # 여유 공간 20% 확보
+        volume_limit = vehicle.capacity.volume * 0.8
+        weight_limit = vehicle.capacity.weight * 0.8
         
-        # 용량 제한 (90% 제한)
-        volume_limit = vehicle.capacity.volume * 0.9
-        weight_limit = vehicle.capacity.weight * 0.9
-        
-        # 기본 용량 검사
-        if new_volume > volume_limit or new_weight > weight_limit:
-            return False
-        
-        # 시간 윈도우 검사
-        if hasattr(point, 'time_window') and cluster:
-            time_windows = [p.time_window for p in cluster + [point] if hasattr(p, 'time_window')]
-            if time_windows:
-                earliest = min(tw.start for tw in time_windows)
-                latest = max(tw.end for tw in time_windows)
-                time_span = (latest - earliest).total_seconds() / 3600
-                if time_span > 8:  # 8시간 제한
-                    return False
-        
-        return True
+        return (total_volume <= volume_limit and 
+                total_weight <= weight_limit)
 
     def _find_most_available_cluster(self, clusters: List[List[DeliveryPoint]], 
-                                 vehicles: List[Vehicle]) -> Optional[int]:
-        """
-        가장 여유 있는 클러스터의 인덱스를 찾습니다.
-        """
+                                   vehicles: List[Vehicle]) -> Optional[int]:
+        """가장 여유 있는 클러스터 찾기"""
         min_usage = float('inf')
-        best_idx = None
+        best_cluster = None
         
         for i, (cluster, vehicle) in enumerate(zip(clusters, vehicles)):
-            volume_ratio = sum(p.volume for p in cluster) / vehicle.capacity.volume
-            weight_ratio = sum(p.weight for p in cluster) / vehicle.capacity.weight
-            max_usage = max(volume_ratio, weight_ratio)
+            total_volume = sum(p.volume for p in cluster)
+            total_weight = sum(p.weight for p in cluster)
+            
+            volume_usage = total_volume / vehicle.capacity.volume
+            weight_usage = total_weight / vehicle.capacity.weight
+            max_usage = max(volume_usage, weight_usage)
             
             if max_usage < min_usage:
                 min_usage = max_usage
-                best_idx = i
-        
-        return best_idx
+                best_cluster = i
+                
+        return best_cluster
 
     def _adjust_capacity_constraints(self, clusters: List[List[DeliveryPoint]], 
                                   vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:

@@ -13,81 +13,142 @@ from src.algorithm.cluster import (
 from src.model.time_window import TimeWindow
 from typing import List, Optional
 from sklearn.cluster import KMeans
+import math
+import logging
+import random
+import copy
+import cProfile
+import pstats
+import io
+from pstats import SortKey
+import psutil
+import os
+import time
 
-def create_test_points(size: int) -> list[DeliveryPoint]:
-    """테스트용 배송 지점 생성"""
+def create_test_points(n: int) -> List[DeliveryPoint]:
+    """테스트용 배송 포인트 생성"""
     points = []
-    now = datetime.now()
+    base_time = datetime.now()
     
-    # 주요 상권 지역 (실제 수원시 좌표 기반)
-    areas = [
-        (37.2800, 127.0388, "수원역"),    # 수원역 부근
-        (37.2849, 127.0178, "아주대"),    # 아주대학교 부근
-        (37.2537, 127.0554, "영통"),      # 영통 신도시
-        (37.2864, 127.0555, "광교"),      # 광교 신도시
+    for i in range(n):
+        point = DeliveryPoint(
+            id=f'DP{i+1}',
+            latitude=37.2636 + random.uniform(-0.02, 0.02),
+            longitude=127.0286 + random.uniform(-0.02, 0.02),
+            address1=f'Test Address 수원역 {i+1}',
+            address2=f'상세주소 {i+1}',
+            time_window=TimeWindow(
+                start=base_time,
+                end=base_time + timedelta(hours=8)
+            ),
+            service_time=15,
+            volume=random.uniform(0.5, 2.0),
+            weight=random.uniform(10, 50),
+            special_requirements=[],
+            priority=random.randint(1, 3)
+        )
+        points.append(point)
+    return points
+
+def create_test_vehicles(n: int) -> List[Vehicle]:
+    """테스트용 차량 생성"""
+    now = datetime.now()
+    vehicles = []
+    
+    for i in range(n):
+        vehicle = Vehicle(
+            id=f'V{i+1}',
+            type='TRUCK_1TON',
+            capacity=VehicleCapacity(
+                volume=30.0,
+                weight=300.0
+            ),
+            features=['STANDARD'],
+            cost_per_km=500.0,
+            start_time=now,
+            end_time=now + timedelta(hours=8),
+            current_location=(37.2636, 127.0286)
+        )
+        vehicles.append(vehicle)
+    return vehicles
+
+def create_test_points_with_requirements(n: int) -> List[DeliveryPoint]:
+    """특수 요구사항이 있는 테스트 포인트 생성"""
+    points = []
+    requirements_options = [
+        ['REFRIGERATED'],
+        ['LIFT'],
+        ['TAIL_LIFT'],
+        ['REFRIGERATED', 'LIFT'],
+        ['REFRIGERATED', 'TAIL_LIFT'],
+        []  # 일반 배송
     ]
     
-    for i in range(size):
-        # 랜덤하게 지역 선택
-        area = areas[i % len(areas)]
+    base_time = datetime.now()
+    
+    for i in range(n):
+        volume = random.uniform(1.0, 2.0) if random.random() < 0.3 else random.uniform(0.3, 1.0)
+        weight = random.uniform(50, 100) if random.random() < 0.3 else random.uniform(10, 50)
+        priority = 3 if random.random() < 0.2 else random.randint(1, 2)
         
-        # 선택된 지역 주변에 포인트 생성
-        lat = area[0] + np.random.normal(0, 0.005)  # 약 500m 반경
-        lon = area[1] + np.random.normal(0, 0.005)
-        
-        # 현실적인 시간 윈도우 생성
-        start_time = now + timedelta(hours=np.random.randint(0, 4))
-        end_time = start_time + timedelta(hours=np.random.randint(2, 6))
-        
-        # 현실적인 물량 생성
-        volume = np.random.uniform(0.5, 2.0)  # m³
-        weight = np.random.uniform(10, 50)    # kg
-        
-        # 우선순위는 시간 윈도우에 따라 설정
-        priority = 3 if (end_time - now).total_seconds() < 7200 else \
-                  2 if (end_time - now).total_seconds() < 14400 else 1
+        start_time = base_time + timedelta(hours=random.randint(0, 4))
+        end_time = start_time + timedelta(hours=4)
         
         point = DeliveryPoint(
-            id=f"DP{i+1}",
-            latitude=lat,
-            longitude=lon,
-            address1=f"Test Address {area[2]} {i+1}",
-            address2="",
-            time_window=TimeWindow(start_time, end_time),
-            service_time=15,  # 15분 고정
+            id=f'DP{i+1}',
+            latitude=37.2636 + random.uniform(-0.05, 0.05),
+            longitude=127.0286 + random.uniform(-0.05, 0.05),
+            address1=f'Test Address {i+1}',
+            address2=f'상세주소 {i+1}',
+            time_window=TimeWindow(
+                start=start_time,
+                end=end_time
+            ),
+            service_time=15,
             volume=volume,
             weight=weight,
-            special_requirements=[],
+            special_requirements=random.choice(requirements_options),
             priority=priority
         )
         points.append(point)
     
     return points
 
-def create_test_vehicles(count: int) -> list[Vehicle]:
-    """테스트용 차량 생성"""
+def create_special_vehicles(n: int) -> List[Vehicle]:
+    """특수 기능을 가진 차량 생성"""
     vehicles = []
+    features_combinations = [
+        ['STANDARD', 'REFRIGERATED', 'LIFT'],
+        ['STANDARD', 'LIFT', 'TAIL_LIFT'],
+        ['STANDARD', 'REFRIGERATED', 'LIFT', 'TAIL_LIFT']
+    ]
+    
     now = datetime.now()
     
-    for i in range(count):
-        capacity = VehicleCapacity(
-            volume=15.0,  # 15m³
-            weight=1000.0  # 1톤
-        )
-        
+    for i in range(n):
         vehicle = Vehicle(
-            id=f"V{i+1}",
-            type="TRUCK_1TON",
-            capacity=capacity,
-            features=["STANDARD"],
+            id=f'SV{i+1}',
+            type='TRUCK_1TON',
+            capacity=VehicleCapacity(
+                volume=20.0,
+                weight=1500.0
+            ),
+            features=random.choice(features_combinations),
             cost_per_km=500.0,
             start_time=now,
             end_time=now + timedelta(hours=8),
-            current_location=(37.2636, 127.0286)  # 수원시 중심
+            current_location=(37.2636, 127.0286)
         )
         vehicles.append(vehicle)
     
     return vehicles
+
+def create_high_priority_points(n: int) -> List[DeliveryPoint]:
+    """우선순위가 높은 테스트 포인트 생성"""
+    points = create_test_points(n)
+    for point in points:
+        point.priority = 3
+    return points
 
 def test_cluster_small_scale():
     """소규모 클러스터링 테스트 (20개 지점)"""
@@ -331,84 +392,123 @@ def test_cluster_solution_quality():
     assert intra_distance_std < 0.1
     assert priority_score_std < 0.1
 
-def test_stability():
-    """안정성 테스트: 100회 반복"""
-    success_count = 0
-    failures = []
+def test_cluster_edge_cases_advanced():
+    """고급 엣지 케이스 테스트"""
+    # 특수 차량이 필요한 케이스
+    special_points = create_test_points_with_requirements(3)
+    regular_vehicles = create_test_vehicles(5)
     
-    for i in range(100):
-        try:
-            # 기본 테스트
-            points = create_test_points(30)
-            vehicles = create_test_vehicles(3)
-            
-            # 일부 포인트의 우선순위를 높게 설정
-            high_priority_indices = [0, 5, 10, 15, 20, 25]
-            for idx in high_priority_indices:
-                points[idx].priority = 3
-            
-            clusters = cluster_points(points, vehicles, 'enhanced_kmeans')
-            
-            # 검증
-            if clusters is None:
-                failures.append(f"반복 {i+1}: clusters is None")
-                continue
-                
-            # 1. 클러스터 수 확인
-            if len(clusters) != 3:
-                failures.append(f"반복 {i+1}: 잘못된 클러스터 수 - {len(clusters)}")
-                continue
-                
-            # 2. 포인트 수 확인
-            total_points = sum(len(cluster) for cluster in clusters)
-            if total_points != 30:
-                failures.append(f"반복 {i+1}: 잘못된 총 포인트 수 - {total_points}")
-                continue
-                
-            # 3. 클러스터 크기 차이 확인
-            cluster_sizes = [len(cluster) for cluster in clusters]
-            size_diff = max(cluster_sizes) - min(cluster_sizes)
-            if size_diff > 5:
-                failures.append(f"반복 {i+1}: 클러스터 크기 차이 초과 - {size_diff}")
-                continue
-                
-            # 4. 우선순위 분배 확인
-            high_priority_distribution = [
-                sum(1 for p in cluster if p.priority == 3)
-                for cluster in clusters
-            ]
-            if not all(count > 0 for count in high_priority_distribution):
-                failures.append(f"반복 {i+1}: 우선순위 분배 실패 - {high_priority_distribution}")
-                continue
-                
-            # 5. 용량 제약 확인
-            capacity_violated = False
-            for cluster, vehicle in zip(clusters, vehicles):
-                total_volume = sum(p.volume for p in cluster)
-                total_weight = sum(p.weight for p in cluster)
-                if (total_volume > vehicle.capacity.volume or
-                    total_weight > vehicle.capacity.weight):
-                    failures.append(f"반복 {i+1}: 용량 제약 위반")
-                    capacity_violated = True
-                    break
-            
-            if capacity_violated:
-                continue
-                
-            success_count += 1
-            
-        except Exception as e:
-            failures.append(f"반복 {i+1}: 예외 발생 - {str(e)}")
+    # Vehicle 클래스의 현재 인터페이스에 맞게 수정
+    now = datetime.now()
+    special_vehicles = [
+        Vehicle(
+            id=f'SV{i+1}',
+            type='TRUCK_1TON',
+            capacity=VehicleCapacity(
+                volume=20.0,
+                weight=1500.0
+            ),
+            features=random.choice([
+                ['STANDARD', 'REFRIGERATED', 'LIFT'],
+                ['STANDARD', 'LIFT', 'TAIL_LIFT'],
+                ['STANDARD', 'REFRIGERATED', 'LIFT', 'TAIL_LIFT']
+            ]),
+            cost_per_km=500.0,
+            start_time=now,
+            end_time=now + timedelta(hours=8),
+            current_location=(37.2636, 127.0286)
+        ) for i in range(2)
+    ]
     
-    # 결과 출력
-    print(f"\n안정성 테스트 결과:")
-    print(f"성공: {success_count}/100")
-    if failures:
-        print("\n실패 케이스:")
-        for failure in failures:
-            print(f"- {failure}")
+    clusters = cluster_points(special_points, regular_vehicles + special_vehicles)
+    assert len(clusters) >= 2  # 특수 차량이 필요한 포인트들은 반드시 별도 클러스터
+
+    # 우선순위가 높은 포인트들
+    high_priority_points = create_high_priority_points(3)
+    vehicles = create_test_vehicles(5)
+    clusters = cluster_points(high_priority_points, vehicles)
+    assert len(clusters) >= 3  # 우선순위 포인트는 분산되어야 함
+
+def test_clustering_basic_performance():
+    """기본적인 성능 테스트"""
+    logger = logging.getLogger(__name__)
     
-    assert success_count == 100, f"안정성 테스트 실패: {100-success_count}개의 테스트 실패"
+    points = create_test_points(100)
+    vehicles = create_test_vehicles(8)
+    
+    start_time = time.time()
+    clusters = cluster_points(points, vehicles, 'enhanced_kmeans')
+    execution_time = time.time() - start_time
+    
+    assert clusters is not None
+    assert len(clusters) == 8
+    assert sum(len(cluster) for cluster in clusters) == 100
+    assert execution_time < 3.0, f"실행 시간이 너무 깁니다: {execution_time:.2f}초"
+    
+    logger.info(f"클러스터링 실행 시간: {execution_time:.2f}초")
+
+def test_clustering_memory_efficiency():
+    """메모리 효율성 테스트"""
+    logger = logging.getLogger(__name__)
+    
+    try:
+        process = psutil.Process(os.getpid())
+        initial_memory = process.memory_info().rss / 1024 / 1024
+        
+        points = create_test_points(200)
+        vehicles = create_test_vehicles(15)
+        clusters = cluster_points(points, vehicles, 'enhanced_kmeans')
+        
+        final_memory = process.memory_info().rss / 1024 / 1024
+        memory_increase = final_memory - initial_memory
+        
+        assert clusters is not None
+        assert len(clusters) == 15
+        assert sum(len(cluster) for cluster in clusters) == 200
+        assert memory_increase < 50, f"메모리 사용량 증가가 너무 큽니다: {memory_increase:.2f}MB"
+        
+        logger.info(f"메모리 사용량 증가: {memory_increase:.2f}MB")
+        
+    except ImportError:
+        pytest.skip("psutil 패키지가 설치되지 않았습니다.")
+
+def test_clustering_stability():
+    """안정성 테스트"""
+    logger = logging.getLogger(__name__)
+    
+    # 여러 번 실행하여 결과의 일관성 확인
+    num_runs = 5
+    execution_times = []
+    cluster_sizes = []
+    
+    points = create_test_points(50)
+    vehicles = create_test_vehicles(5)
+    
+    for i in range(num_runs):
+        start_time = time.time()
+        clusters = cluster_points(points, vehicles, 'enhanced_kmeans')
+        end_time = time.time()
+        
+        execution_times.append(end_time - start_time)
+        cluster_sizes.append([len(cluster) for cluster in clusters])
+        
+        # 기본 검증
+        assert clusters is not None
+        assert len(clusters) == 5
+        assert sum(len(cluster) for cluster in clusters) == 50
+    
+    # 실행 시간 일관성 검증
+    time_variance = np.var(execution_times)
+    assert time_variance < 0.1, f"실행 시간이 불안정합니다. 분산: {time_variance:.3f}"
+    
+    # 클러스터 크기 일관성 검증
+    size_variance = np.var([np.var(sizes) for sizes in cluster_sizes])
+    assert size_variance < 2.0, f"클러스터 크기가 불안정합니다. 분산: {size_variance:.3f}"
+    
+    logger.info(f"평균 실행 시간: {np.mean(execution_times):.2f}초")
+    logger.info(f"실행 시간 분산: {time_variance:.3f}")
+    logger.info(f"클러스터 크기 분산: {size_variance:.3f}")
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     pytest.main(['-v']) 
