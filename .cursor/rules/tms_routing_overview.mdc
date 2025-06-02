@@ -1,0 +1,73 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# TMS 라우팅 프로젝트 구조 및 주요 파일 안내
+
+이 문서는 TMS (Transportation Management System) 라우팅 최적화 프로젝트의 구조와 주요 파일 및 디렉토리에 대한 개요를 제공합니다. AI 어시스턴트가 프로젝트를 이해하고 효과적으로 지원하는 데 도움을 주기 위해 작성되었습니다.
+
+## 프로젝트 개요
+
+본 프로젝트는 화물 운송 경로 최적화를 목표로 하는 시스템입니다. 다양한 제약 조건 하에서 최적의 배송 경로를 계산하고, 그 결과를 시각화하여 제공합니다.
+
+## 주요 실행 파일
+
+*   **[run_all.py](mdc:run_all.py)**: 프로젝트의 메인 실행 스크립트입니다. 이 파일을 통해 전체 최적화 파이프라인, 테스트, 또는 특정 모듈을 실행할 수 있습니다.
+    *   주요 실행 옵션:
+        *   `--integrated`: 통합 최적화 모드로 전체 시스템을 실행합니다.
+        *   `--test`: 테스트 모드로 실행하여 시스템의 일부 기능을 검증합니다.
+        *   다양한 서브 명령어 및 옵션을 통해 세부 동작을 제어합니다.
+
+## 설정
+
+*   **[config/tms_config.py](mdc:config/tms_config.py)**: 시스템 전반의 설정을 담당하는 파일입니다. API 키, 최적화 파라미터, 데이터 경로 등 다양한 변수를 정의합니다.
+
+## 소스 코드 디렉토리: `src`
+
+핵심 로직은 `src` 디렉토리 내의 하위 모듈들로 구성됩니다.
+
+*   **[src/optimization/](mdc:src/optimization)**: 라우팅 최적화 알고리즘과 관련된 모듈들이 위치합니다.
+    *   `optimizer.py` (가상): 핵심 최적화 로직을 포함할 수 있는 파일 (실제 파일명은 다를 수 있음).
+*   **[src/visualization/](mdc:src/visualization)**: 최적화된 경로 및 관련 데이터를 시각화하는 모듈들이 위치합니다.
+    *   **[src/visualization/route_visualizer.py](mdc:src/visualization/route_visualizer.py)**: Folium 등의 라이브러리를 사용하여 경로를 HTML 지도로 시각화합니다.
+*   **[src/api_clients/](mdc:src/api_clients)**: 외부 API (경로 계산, 주소 변환 등) 연동을 위한 클라이언트 모듈들이 위치합니다.
+    *   `osrm_client.py` (가상): OSRM API 연동 (실제 파일명은 다를 수 있음).
+    *   `kakao_client.py` (가상): Kakao API 연동 (실제 파일명은 다를 수 있음).
+*   **[src/data_processing/](mdc:src/data_processing)**: 입력 데이터의 전처리, 변환, 유효성 검사 등을 수행하는 모듈들이 위치합니다.
+*   **[src/utils/](mdc:src/utils)**: 프로젝트 전반에서 사용되는 유틸리티 함수 및 클래스들이 위치합니다.
+
+## 데이터 디렉토리: `data`
+
+입력 데이터, 중간 처리 결과, 또는 시스템 운영에 필요한 영구 데이터 등이 저장됩니다.
+
+*   `*.csv`, `*.json`, `*.xlsx` 등의 형태로 주문 정보, 차량 정보, 지점 정보 등이 저장될 수 있습니다.
+*   **[data/extracted_coordinates.json](mdc:data/extracted_coordinates.json)**: 주소로부터 추출된 좌표 정보 등이 저장되는 예시 파일입니다.
+
+## 출력 디렉토리: `output`
+
+최적화 결과, 생성된 리포트, 시각화 파일 등이 저장됩니다.
+
+*   `route_visualization_*.html`: 시각화된 경로 지도 파일입니다.
+*   로그 파일, 결과 요약 파일 등이 생성될 수 있습니다.
+
+## 의존성 관리
+
+*   **[requirements.txt](mdc:requirements.txt)**: 프로젝트 실행에 필요한 파이썬 패키지 및 버전 정보가 명시되어 있습니다. `pip install -r requirements.txt` 명령을 통해 의존성을 설치할 수 있습니다.
+
+## 추가 문서
+
+*   **[README.md](mdc:README.md)**: 프로젝트에 대한 전반적인 설명, 설치 방법, 사용법, 기여 방법 등이 기술되어 있을 수 있습니다. (현재는 내용이 없을 수 있으나, 일반적인 위치입니다.)
+*   **[setup.py](mdc:setup.py)**: 파이썬 패키징 설정 파일입니다. (프로젝트가 패키지 형태로 배포될 경우 사용됩니다.)
+
+## 시스템 실행 흐름 (예시: 통합 최적화 모드)
+
+1.  `run_all.py --integrated` 실행
+2.  `config/tms_config.py` 에서 설정 로드
+3.  `src/data_processing/` 모듈을 통해 입력 데이터 로드 및 전처리
+4.  `src/api_clients/` 를 활용하여 필요한 외부 데이터 (예: 좌표, 거리/시간 매트릭스) 조회
+5.  `src/optimization/` 모듈의 알고리즘을 사용하여 경로 최적화 수행
+6.  `src/visualization/route_visualizer.py` 를 통해 최적화 결과 시각화 (예: `output/route_visualization_*.html` 생성)
+7.  결과 요약 및 로그 `output` 디렉토리에 저장
+
+이 규칙을 통해 AI 어시스턴트가 TMS 라우팅 프로젝트의 구조를 더 잘 파악하고, 코드 탐색, 수정, 분석 등의 작업을 보다 효율적으로 수행할 수 있기를 기대합니다.

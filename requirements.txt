@@ -1,18 +1,19 @@
-pymysql
-sqlalchemy
-pandas
-jupyter
-matplotlib
-folium
-ortools
-scikit-learn
-geopy
-ipykernel
-pytest>=7.0.0
-pytest-cov>=4.0.0
-hdbscan
-numpy
-psutil
-matplotlib
-seaborn
-pandas
+# 운영 필수 패키지
+pymysql>=1.0.0
+sqlalchemy>=1.4.0
+pandas>=1.5.0
+numpy>=1.21.0
+scikit-learn>=1.1.0
+ortools>=9.0
+folium>=0.14.0
+geopy>=2.2.0
+hdbscan>=0.8.0
+psutil>=5.8.0
+
+# 개발/테스트 패키지 (선택사항)
+# pytest>=7.0.0
+# pytest-cov>=4.0.0
+# matplotlib>=3.5.0
+# seaborn>=0.11.0
+# jupyter>=1.0.0
+# ipykernel>=6.0.0

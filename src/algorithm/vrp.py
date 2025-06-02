@@ -29,18 +29,23 @@ class VRPSolver:
             logger.error("배송지점 데이터가 없습니다.")
             return False
             
-        # 차량 용량 검증
+        # 기본 유효성 검사
         total_volume = sum(p.volume for p in self.delivery_points)
         total_weight = sum(p.weight for p in self.delivery_points)
         total_vehicle_volume = sum(v.capacity.volume for v in self.vehicles)
         total_vehicle_weight = sum(v.capacity.weight for v in self.vehicles)
         
-        if total_volume > total_vehicle_volume:
-            logger.error(f"총 화물 부피({total_volume})가 차량 용량({total_vehicle_volume})을 초과합니다.")
-            return False
-        if total_weight > total_vehicle_weight:
-            logger.error(f"총 화물 무게({total_weight})가 차량 용량({total_vehicle_weight})을 초과합니다.")
-            return False
+        # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+        if any(p.volume > 0 for p in self.delivery_points):
+            if total_volume > total_vehicle_volume:
+                logger.error(f"총 화물 부피({total_volume})가 차량 용량({total_vehicle_volume})을 초과합니다.")
+                return False
+                
+        # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+        if any(p.weight > 0 for p in self.delivery_points):
+            if total_weight > total_vehicle_weight:
+                logger.error(f"총 화물 무게({total_weight})가 차량 용량({total_vehicle_weight})을 초과합니다.")
+                return False
             
         return True
     

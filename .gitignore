@@ -68,6 +68,7 @@ optimization_result.json
 
 # 환경 설정 파일 (민감한 정보 포함)
 src/config.py
+config/db_config.py
 .env
 .env.local
 .env.*.local

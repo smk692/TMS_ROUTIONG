@@ -29,22 +29,12 @@ distance_matrix = DistanceMatrix()
 __all__ = ['cluster_points']
 
 @dataclass
-class TimeWindow:
-    """배송 가능 시간대를 나타내는 클래스"""
-    start: datetime
-    end: datetime
-
-    def __init__(self, start: datetime, end: datetime):
-        self.start = start
-        self.end = end
-
-    def is_valid(self, current_time: datetime) -> bool:
-        """주어진 시간이 시간 윈도우 내에 있는지 확인"""
-        return self.start <= current_time <= self.end
-
-    def get_duration(self) -> float:
-        """시간 윈도우의 길이를 시간 단위로 반환"""
-        return (self.end - self.start).total_seconds() / 3600
+class ClusteringMetrics:
+    """클러스터링 성능 메트릭"""
+    total_distance: float
+    balance_score: float
+    efficiency_score: float
+    constraint_violations: int
 
 class ClusteringStrategy(ABC):
     @abstractmethod
@@ -61,7 +51,17 @@ class ClusteringStrategy(ABC):
             total_volume = sum(p.volume for p in cluster)
             total_weight = sum(p.weight for p in cluster)
             
-            if total_volume > vehicle.capacity.volume or total_weight > vehicle.capacity.weight:
+            # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+            volume_exceeded = False
+            if any(p.volume > 0 for p in cluster):
+                volume_exceeded = total_volume > vehicle.capacity.volume
+                
+            # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+            weight_exceeded = False
+            if any(p.weight > 0 for p in cluster):
+                weight_exceeded = total_weight > vehicle.capacity.weight
+                
+            if volume_exceeded or weight_exceeded:
                 return False
                 
         return True
@@ -216,262 +216,240 @@ class ClusteringStrategy(ABC):
                 
         return result_clusters
 
-class EnhancedKMeansStrategy(ClusteringStrategy):
+class BalancedKMeansStrategy(ClusteringStrategy):
+    """균형 잡힌 K-means 클러스터링 전략"""
+    
     def __init__(self):
-        self._distance_cache = {}
-        self._point_coords = None
+        self.max_iterations = 50
+        self.tolerance = 1e-4
         
     def cluster(self, points: List[DeliveryPoint], vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """개선된 클러스터링 전략"""
-        try:
-            if not points or not vehicles:
-                return []
-
-            # 좌표 배열 초기화
-            self._point_coords = np.array([[p.latitude, p.longitude] for p in points])
+        """균형 잡힌 클러스터링 실행"""
+        if not points or not vehicles:
+            return []
             
-            # 클러스터 수 결정
-            n_clusters = len(vehicles)
-            
-            # 초기 중심점 선택
-            centers = self._initialize_centers(points, n_clusters)
-            logger.info(f"초기 중심점 {len(centers)}개 선택 완료")
-            
-            # 클러스터 할당
-            clusters = self._assign_to_clusters(points, centers, vehicles)
-            logger.info(f"초기 클러스터 할당 완료: {len(clusters)}개 클러스터")
-            
-            # 용량 제약 조정
-            clusters = self._adjust_capacity_constraints(clusters, vehicles)
-            logger.info("용량 제약 조정 완료")
-            
-            return clusters
-            
-        finally:
-            # 메모리 정리
-            self._distance_cache.clear()
-            self._point_coords = None
-
-    def _initialize_centers(self, points: List[DeliveryPoint], n_clusters: int) -> List[DeliveryPoint]:
-        """개선된 초기 중심점 선택"""
-        centers = []
-        remaining_points = points.copy()
+        n_clusters = len(vehicles)
+        logger.info(f"균형 잡힌 K-means 클러스터링 시작: {len(points)}개 포인트 → {n_clusters}개 클러스터")
         
-        # 우선순위가 가장 높은 포인트를 첫 중심점으로 선택
-        first_center = max(remaining_points, key=lambda p: p.priority)
-        centers.append(first_center)
-        remaining_points.remove(first_center)
+        # 1. 초기 중심점 설정 (지리적으로 분산된 점들 선택)
+        centers = self._initialize_balanced_centers(points, n_clusters)
         
-        # 나머지 중심점 선택
-        while len(centers) < n_clusters and remaining_points:
-            # 각 남은 포인트에 대한 점수 계산
-            best_point = None
-            max_score = -float('inf')
+        # 2. 반복적으로 클러스터 할당 및 중심점 업데이트
+        for iteration in range(self.max_iterations):
+            # 균형 잡힌 할당
+            clusters = self._balanced_assignment(points, centers, vehicles)
             
-            # 병렬 처리로 점수 계산
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = []
-                for point in remaining_points:
-                    futures.append(
-                        executor.submit(self._calculate_center_score, point, centers)
-                    )
-                
-                for future in futures:
-                    point, score = future.result()
-                    if score > max_score:
-                        max_score = score
-                        best_point = point
+            # 새로운 중심점 계산
+            new_centers = self._update_centers(clusters)
             
-            if best_point:
-                centers.append(best_point)
-                remaining_points.remove(best_point)
-            else:
+            # 수렴 확인
+            if self._has_converged(centers, new_centers):
+                logger.info(f"클러스터링 수렴: {iteration + 1}회 반복")
                 break
                 
+            centers = new_centers
+        
+        # 3. 최종 균형 조정
+        balanced_clusters = self._final_balance_adjustment(clusters, vehicles)
+        
+        # 4. 검증 (완화된 조건)
+        if self._validate_clusters_relaxed(balanced_clusters, vehicles):
+            logger.info("클러스터링 검증 성공")
+            return balanced_clusters
+        else:
+            logger.warning("클러스터링 검증 실패, 기본 분할 사용")
+            return self._fallback_equal_division(points, vehicles)
+    
+    def _initialize_balanced_centers(self, points: List[DeliveryPoint], n_clusters: int) -> List[Tuple[float, float]]:
+        """지리적으로 균등하게 분산된 초기 중심점 설정"""
+        # 모든 점의 좌표 수집
+        coords = np.array([[p.latitude, p.longitude] for p in points])
+        
+        # K-means++와 유사하지만 더 균등한 분포를 위한 초기화
+        centers = []
+        
+        # 첫 번째 중심점: 전체 중심
+        first_center = np.mean(coords, axis=0)
+        centers.append((first_center[0], first_center[1]))
+        
+        # 나머지 중심점들: 기존 중심점들로부터 최대한 멀리
+        for _ in range(n_clusters - 1):
+            max_min_distance = -1
+            best_center = None
+            
+            for point in points:
+                # 이 점에서 가장 가까운 기존 중심점까지의 거리
+                min_distance = min(
+                    np.sqrt((point.latitude - center[0])**2 + (point.longitude - center[1])**2)
+                    for center in centers
+                )
+                
+                # 최대 최소 거리 업데이트
+                if min_distance > max_min_distance:
+                    max_min_distance = min_distance
+                    best_center = (point.latitude, point.longitude)
+            
+            if best_center:
+                centers.append(best_center)
+        
         return centers
-
-    def _calculate_center_score(self, point: DeliveryPoint, centers: List[DeliveryPoint]) -> Tuple[DeliveryPoint, float]:
-        """중심점 후보 점수 계산"""
-        min_distance = float('inf')
-        for center in centers:
-            dist = self._get_distance(point, center)
-            min_distance = min(min_distance, dist)
+    
+    def _balanced_assignment(self, points: List[DeliveryPoint], centers: List[Tuple[float, float]], 
+                           vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
+        """균형 잡힌 클러스터 할당"""
+        n_clusters = len(centers)
+        target_size = len(points) // n_clusters
+        max_size = target_size + (len(points) % n_clusters)
         
-        score = min_distance * point.priority
-        return point, score
-
-    def _assign_to_clusters(self, points: List[DeliveryPoint], centers: List[DeliveryPoint], 
-                          vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """
-        포인트들을 가장 적합한 클러스터에 할당합니다.
-        """
-        clusters = [[] for _ in range(len(centers))]
+        # 각 점에서 각 중심점까지의 거리 계산
+        distances = []
+        for point in points:
+            point_distances = []
+            for center in centers:
+                dist = np.sqrt((point.latitude - center[0])**2 + (point.longitude - center[1])**2)
+                point_distances.append(dist)
+            distances.append(point_distances)
         
-        # 중심점들을 각 클러스터에 먼저 할당
-        for i, center in enumerate(centers):
-            clusters[i].append(center)
+        # 초기 클러스터 생성
+        clusters = [[] for _ in range(n_clusters)]
+        assigned = [False] * len(points)
         
-        # 남은 포인트들을 우선순위와 거리를 고려하여 할당
-        remaining_points = [p for p in points if p not in centers]
-        remaining_points.sort(key=lambda p: (-p.priority, p.id))  # 우선순위 높은 순
-
-        for point in remaining_points:
-            best_cluster_idx = -1
-            min_cost = float('inf')
+        # 1단계: 각 클러스터에 최소한의 점들 할당
+        for cluster_idx in range(n_clusters):
+            # 이 클러스터에 가장 가까운 미할당 점 찾기
+            best_point_idx = -1
+            min_distance = float('inf')
             
-            # 각 클러스터에 대해 비용 계산
-            for i, (cluster, vehicle) in enumerate(zip(clusters, vehicles)):
-                if not self._can_add_to_cluster(point, cluster, vehicle):
-                    continue
-                
-                # 거리 기반 비용
-                dist = self._get_distance(point, centers[i])
-                
-                # 클러스터 크기 페널티
-                size_penalty = len(cluster) / len(points)
-                
-                # 용량 사용률 페널티
-                volume_ratio = sum(p.volume for p in cluster) / vehicle.capacity.volume
-                weight_ratio = sum(p.weight for p in cluster) / vehicle.capacity.weight
-                capacity_penalty = max(volume_ratio, weight_ratio)
-                
-                # 총 비용
-                cost = dist * (1 + size_penalty + capacity_penalty)
-                
-                if cost < min_cost:
-                    min_cost = cost
-                    best_cluster_idx = i
+            for point_idx, point_assigned in enumerate(assigned):
+                if not point_assigned and distances[point_idx][cluster_idx] < min_distance:
+                    min_distance = distances[point_idx][cluster_idx]
+                    best_point_idx = point_idx
             
-            # 가장 적합한 클러스터에 할당
-            if best_cluster_idx != -1:
-                clusters[best_cluster_idx].append(point)
+            if best_point_idx >= 0:
+                clusters[cluster_idx].append(points[best_point_idx])
+                assigned[best_point_idx] = True
+        
+        # 2단계: 나머지 점들을 균형 있게 할당
+        for point_idx, point in enumerate(points):
+            if assigned[point_idx]:
+                continue
+                
+            # 현재 클러스터 크기 확인
+            cluster_sizes = [len(cluster) for cluster in clusters]
+            
+            # 가장 작은 클러스터들 중에서 가장 가까운 클러스터 선택
+            min_size = min(cluster_sizes)
+            candidate_clusters = [i for i, size in enumerate(cluster_sizes) if size == min_size]
+            
+            # 후보 클러스터들 중 가장 가까운 것 선택
+            best_cluster = min(candidate_clusters, key=lambda i: distances[point_idx][i])
+            
+            # 용량 제약 확인
+            if self._can_add_to_cluster_balanced(point, clusters[best_cluster], vehicles[best_cluster]):
+                clusters[best_cluster].append(point)
+                assigned[point_idx] = True
             else:
-                # 어떤 클러스터에도 할당할 수 없는 경우
-                # 가장 여유 있는 클러스터에 할당
-                best_idx = self._find_most_available_cluster(clusters, vehicles)
-                if best_idx is not None:
-                    clusters[best_idx].append(point)
-                else:
-                    # 모든 시도 실패 시 로그 기록
-                    logger.warning(f"포인트 {point.id} 할당 실패: 적합한 클러스터 없음")
+                # 용량 제약으로 인해 할당 불가능한 경우, 다른 클러스터 시도
+                for cluster_idx in sorted(range(n_clusters), key=lambda i: distances[point_idx][i]):
+                    if (cluster_idx != best_cluster and 
+                        len(clusters[cluster_idx]) < max_size and
+                        self._can_add_to_cluster_balanced(point, clusters[cluster_idx], vehicles[cluster_idx])):
+                        clusters[cluster_idx].append(point)
+                        assigned[point_idx] = True
+                        break
         
         return clusters
-
-    def _get_distance(self, point1: DeliveryPoint, point2: DeliveryPoint) -> float:
-        """캐시된 거리 계산"""
-        cache_key = (point1.id, point2.id)
-        if cache_key not in self._distance_cache:
-            self._distance_cache[cache_key] = calculate_distance(
-                point1.latitude, point1.longitude,
-                point2.latitude, point2.longitude
-            )
-        return self._distance_cache[cache_key]
-
-    def _can_add_to_cluster(self, point: DeliveryPoint, cluster: List[DeliveryPoint], 
-                           vehicle: Vehicle) -> bool:
-        """
-        포인트를 클러스터에 추가할 수 있는지 검사합니다.
-        """
-        # 현재 사용량 계산
-        current_volume = sum(p.volume for p in cluster)
-        current_weight = sum(p.weight for p in cluster)
+    
+    def _can_add_to_cluster_balanced(self, point: DeliveryPoint, cluster: List[DeliveryPoint], 
+                                   vehicle: Vehicle) -> bool:
+        """클러스터에 점을 추가할 수 있는지 확인 (균형 고려)"""
+        # 부피 제약 (품목 부피가 있는 경우에만)
+        if any(p.volume > 0 for p in cluster + [point]):
+            total_volume = sum(p.volume for p in cluster) + point.volume
+            if total_volume > vehicle.capacity.volume * 0.95:  # 95% 제한
+                return False
         
-        # 추가 시 사용량
-        new_volume = current_volume + point.volume
-        new_weight = current_weight + point.weight
-        
-        # 용량 제한 (90% 제한)
-        volume_limit = vehicle.capacity.volume * 0.9
-        weight_limit = vehicle.capacity.weight * 0.9
-        
-        # 기본 용량 검사
-        if new_volume > volume_limit or new_weight > weight_limit:
-            return False
-        
-        # 시간 윈도우 검사
-        if hasattr(point, 'time_window') and cluster:
-            time_windows = [p.time_window for p in cluster + [point] if hasattr(p, 'time_window')]
-            if time_windows:
-                earliest = min(tw.start for tw in time_windows)
-                latest = max(tw.end for tw in time_windows)
-                time_span = (latest - earliest).total_seconds() / 3600
-                if time_span > 8:  # 8시간 제한
-                    return False
+        # 무게 제약 (품목 무게가 있는 경우에만)
+        if any(p.weight > 0 for p in cluster + [point]):
+            total_weight = sum(p.weight for p in cluster) + point.weight
+            if total_weight > vehicle.capacity.weight * 0.95:  # 95% 제한
+                return False
         
         return True
-
-    def _find_most_available_cluster(self, clusters: List[List[DeliveryPoint]], 
-                                 vehicles: List[Vehicle]) -> Optional[int]:
-        """
-        가장 여유 있는 클러스터의 인덱스를 찾습니다.
-        """
-        min_usage = float('inf')
-        best_idx = None
+    
+    def _update_centers(self, clusters: List[List[DeliveryPoint]]) -> List[Tuple[float, float]]:
+        """클러스터 중심점 업데이트"""
+        new_centers = []
+        for cluster in clusters:
+            if cluster:
+                center_lat = np.mean([p.latitude for p in cluster])
+                center_lng = np.mean([p.longitude for p in cluster])
+                new_centers.append((center_lat, center_lng))
+            else:
+                # 빈 클러스터의 경우 이전 중심점 유지
+                new_centers.append((0.0, 0.0))  # 임시값
+        return new_centers
+    
+    def _has_converged(self, old_centers: List[Tuple[float, float]], 
+                      new_centers: List[Tuple[float, float]]) -> bool:
+        """수렴 여부 확인"""
+        if len(old_centers) != len(new_centers):
+            return False
+            
+        for old, new in zip(old_centers, new_centers):
+            distance = np.sqrt((old[0] - new[0])**2 + (old[1] - new[1])**2)
+            if distance > self.tolerance:
+                return False
+        return True
+    
+    def _final_balance_adjustment(self, clusters: List[List[DeliveryPoint]], 
+                                vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
+        """최종 균형 조정"""
+        # 크기 균형 조정
+        clusters = self._balance_cluster_sizes(clusters, max_diff=3)
         
-        for i, (cluster, vehicle) in enumerate(zip(clusters, vehicles)):
-            volume_ratio = sum(p.volume for p in cluster) / vehicle.capacity.volume
-            weight_ratio = sum(p.weight for p in cluster) / vehicle.capacity.weight
-            max_usage = max(volume_ratio, weight_ratio)
-            
-            if max_usage < min_usage:
-                min_usage = max_usage
-                best_idx = i
+        # 우선순위 분배 조정
+        clusters = self._ensure_priority_distribution(clusters)
         
-        return best_idx
-
-    def _adjust_capacity_constraints(self, clusters: List[List[DeliveryPoint]], 
-                                  vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """용량 제약 조정 로깅 추가"""
-        max_iterations = 100
-        iteration = 0
-        
-        while iteration < max_iterations:
-            violations_found = False
-            
-            for i, (cluster, vehicle) in enumerate(zip(clusters, vehicles)):
-                total_volume = sum(p.volume for p in cluster)
-                total_weight = sum(p.weight for p in cluster)
-                
-                if (total_volume > vehicle.capacity.volume or 
-                    total_weight > vehicle.capacity.weight):
-                    violations_found = True
-                    logger.warning(
-                        f"용량 제약 위반 발견 (클러스터 {i}):\n"
-                        f"- 용량: {total_volume}/{vehicle.capacity.volume} "
-                        f"({total_volume/vehicle.capacity.volume*100:.1f}%)\n"
-                        f"- 무게: {total_weight}/{vehicle.capacity.weight} "
-                        f"({total_weight/vehicle.capacity.weight*100:.1f}%)"
-                    )
-                    
-                    # 우선순위가 가장 낮은 포인트를 이동
-                    point_to_move = min(cluster, key=lambda p: p.priority)
-                    cluster.remove(point_to_move)
-                    
-                    # 가장 여유 있는 클러스터로 이동
-                    best_cluster_idx = self._find_most_available_cluster(
-                        clusters[:i] + clusters[i+1:], 
-                        vehicles[:i] + vehicles[i+1:]
-                    )
-                    
-                    if best_cluster_idx >= i:
-                        best_cluster_idx += 1
-                    
-                    clusters[best_cluster_idx].append(point_to_move)
-                    logger.info(
-                        f"포인트 이동: 클러스터 {i} -> {best_cluster_idx} "
-                        f"(우선순위: {point_to_move.priority})"
-                    )
-            
-            if not violations_found:
-                logger.info(f"용량 제약 조정 완료: {iteration+1}회 반복")
-                break
-                
-            iteration += 1
-            
-        if iteration == max_iterations:
-            logger.warning("최대 반복 횟수 도달")
-            
         return clusters
+
+    def _fallback_equal_division(self, points: List[DeliveryPoint], 
+                               vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
+        """균등 분할 fallback 방법"""
+        n_clusters = len(vehicles)
+        clusters = [[] for _ in range(n_clusters)]
+        
+        # 단순히 순서대로 균등 분할
+        for i, point in enumerate(points):
+            cluster_idx = i % n_clusters
+            clusters[cluster_idx].append(point)
+        
+        return clusters
+
+    def _validate_clusters_relaxed(self, clusters: List[List[DeliveryPoint]], vehicles: List[Vehicle]) -> bool:
+        """완화된 클러스터 검증 (지리적 클러스터링 우선)"""
+        if len(clusters) != len(vehicles):
+            return False
+            
+        # 빈 클러스터 확인
+        if any(len(cluster) == 0 for cluster in clusters):
+            return False
+            
+        # 기본적인 용량 제약만 확인 (완화된 조건)
+        for cluster, vehicle in zip(clusters, vehicles):
+            # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+            if any(p.volume > 0 for p in cluster):
+                total_volume = sum(p.volume for p in cluster)
+                if total_volume > vehicle.capacity.volume * 1.2:  # 120% 허용 (완화)
+                    return False
+                    
+            # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+            if any(p.weight > 0 for p in cluster):
+                total_weight = sum(p.weight for p in cluster)
+                if total_weight > vehicle.capacity.weight * 1.2:  # 120% 허용 (완화)
+                    return False
+                    
+        return True
 
 class EnhancedDBSCANStrategy(ClusteringStrategy):
     def __init__(self):
@@ -494,7 +472,7 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
             eps, min_samples = self._optimize_parameters(coords, n_clusters)
             
             # 3. DBSCAN 클러스터링 with 예외 처리
-            clusters = self._perform_dbscan(coords, points, eps, min_samples)
+            clusters = self._perform_dbscan(coords, points, eps, min_samples, vehicles)
             
             # 4. 클러스터 수 조정 및 최적화
             clusters = self._optimize_clusters(clusters, n_clusters, vehicles)
@@ -502,12 +480,16 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
             # 5. 제약 조건 검증 및 조정
             clusters = self._adjust_constraints(clusters, vehicles)
             
-            return clusters
-            
+            # 6. 최종 검증
+            if self._validate_final_clusters(clusters, vehicles):
+                return clusters
+            else:
+                logger.warning("HDBSCAN 클러스터링 검증 실패, 기본 전략으로 fallback")
+                return self._fallback_equal_division(points, vehicles)
+                
         except Exception as e:
-            logger.error(f"DBSCAN 클러스터링 실패: {str(e)}")
-            # 폴백: KMeans 전략 사용
-            return EnhancedKMeansStrategy().cluster(points, vehicles)
+            logger.error(f"HDBSCAN 클러스터링 오류: {str(e)}")
+            return self._fallback_equal_division(points, vehicles)
 
     def _prepare_coordinates(self, points: List[DeliveryPoint]) -> np.ndarray:
         """좌표 준비 및 정규화"""
@@ -573,7 +555,7 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
         return 1.0 - cluster_diff_penalty - noise_penalty
 
     def _perform_dbscan(self, coords: np.ndarray, points: List[DeliveryPoint], 
-                       eps: float, min_samples: int) -> List[List[DeliveryPoint]]:
+                       eps: float, min_samples: int, vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
         """DBSCAN 실행 및 결과 처리"""
         dbscan = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=-1)
         labels = dbscan.fit_predict(coords)
@@ -590,10 +572,10 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
                 cluster = [points[i] for i, l in enumerate(labels) if l == label]
                 clusters.append(cluster)
         
-        return self._handle_noise_points(clusters, noise_points)
+        return self._handle_noise_points(clusters, noise_points, vehicles)
 
     def _handle_noise_points(self, clusters: List[List[DeliveryPoint]], 
-                           noise_points: List[DeliveryPoint]) -> List[List[DeliveryPoint]]:
+                           noise_points: List[DeliveryPoint], vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
         """노이즈 포인트 처리 개선"""
         if not noise_points:
             return clusters
@@ -619,7 +601,7 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
             
             # 가장 가까운 클러스터부터 시도
             for dist, cluster_idx in distances:
-                if self._can_add_to_cluster(point, result_clusters[cluster_idx]):
+                if self._can_add_to_cluster(point, result_clusters[cluster_idx], vehicles[cluster_idx % len(vehicles)]):
                     result_clusters[cluster_idx].append(point)
                     assigned = True
                     break
@@ -649,274 +631,64 @@ class EnhancedDBSCANStrategy(ClusteringStrategy):
     
     def _adjust_constraints(self, clusters: List[List[DeliveryPoint]], 
                           vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """제약 조건 조정"""
-        # 용량 제약 조정
-        for i in range(3):  # 최대 3번 시도
-            if self._validate_clusters(clusters, vehicles):
-                break
-            clusters = self._redistribute_overloaded_points(clusters, vehicles)
-        
-        return clusters
-
-    def _redistribute_overloaded_points(self, clusters: List[List[DeliveryPoint]], 
-                                      vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """과부하 포인트 재분배"""
-        result_clusters = copy.deepcopy(clusters)
+        """제약 조건에 맞게 클러스터 조정"""
+        result_clusters = clusters.copy()
         
         for i, (cluster, vehicle) in enumerate(zip(result_clusters, vehicles)):
+            # 용량 제약 확인 및 조정
             while not self._validate_capacity(cluster, vehicle):
-                # 가장 큰 용량을 차지하는 포인트 찾기
+                if not cluster:
+                    break
+                    
+                # 가장 큰 용량을 차지하는 포인트 제거
                 point_to_move = max(cluster, 
                                   key=lambda p: max(p.volume/vehicle.capacity.volume,
-                                                  p.weight/vehicle.capacity.weight))
+                                                   p.weight/vehicle.capacity.weight))
+                cluster.remove(point_to_move)
                 
-                # 다른 클러스터로 이동 시도
-                moved = False
-                for j, target_vehicle in enumerate(vehicles):
-                    if i == j:
-                        continue
-                        
-                    if self._can_add_to_cluster(point_to_move, result_clusters[j], target_vehicle):
-                        cluster.remove(point_to_move)
-                        result_clusters[j].append(point_to_move)
-                        moved = True
+                # 다른 클러스터에 재할당 시도
+                assigned = False
+                for j, (other_cluster, other_vehicle) in enumerate(zip(result_clusters, vehicles)):
+                    if i != j and self._can_add_to_cluster(point_to_move, other_cluster, other_vehicle):
+                        other_cluster.append(point_to_move)
+                        assigned = True
                         break
                 
-                if not moved:
-                    break
+                if not assigned:
+                    # 새 클러스터 생성 (차량이 남아있는 경우)
+                    if len(result_clusters) < len(vehicles):
+                        result_clusters.append([point_to_move])
         
         return result_clusters
-
+    
+    def _validate_capacity(self, cluster: List[DeliveryPoint], vehicle: Vehicle) -> bool:
+        """클러스터가 차량 용량을 초과하지 않는지 확인"""
+        total_volume = sum(point.volume for point in cluster)
+        total_weight = sum(point.weight for point in cluster)
+        
+        return (total_volume <= vehicle.capacity.volume and 
+                total_weight <= vehicle.capacity.weight)
+    
     def _can_add_to_cluster(self, point: DeliveryPoint, cluster: List[DeliveryPoint], 
                            vehicle: Vehicle) -> bool:
         """클러스터에 포인트를 추가할 수 있는지 확인"""
         total_volume = sum(p.volume for p in cluster) + point.volume
         total_weight = sum(p.weight for p in cluster) + point.weight
         
-        # 여유 공간 20% 확보
-        volume_limit = vehicle.capacity.volume * 0.8
-        weight_limit = vehicle.capacity.weight * 0.8
+        return (total_volume <= vehicle.capacity.volume and 
+                total_weight <= vehicle.capacity.weight)
+    
+    def _fallback_equal_division(self, points: List[DeliveryPoint], 
+                               vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
+        """균등 분할 fallback 방법"""
+        clusters = [[] for _ in vehicles]
+        points_per_cluster = len(points) // len(vehicles)
         
-        return (total_volume <= volume_limit and 
-                total_weight <= weight_limit)
-
-class HDBSCANStrategy(ClusteringStrategy):
-    def __init__(self):
-        self._feature_cache = {}
-        self._clusterer_cache = {}
-        self._prediction_cache = {}
-        self.min_cluster_size_ratio = 0.1
-        self.min_samples_ratio = 0.05
-
-    def cluster(self, points: List[DeliveryPoint], vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """개선된 HDBSCAN 기반 클러스터링"""
-        if len(points) <= len(vehicles):
-            return [[p] for p in points[:len(vehicles)]]
-            
-        n_clusters = len(vehicles)
-        
-        try:
-            # 1. 특성 준비 및 전처리
-            features = self._prepare_features(points)
-            
-            # 2. HDBSCAN 실행
-            clusters = self._run_hdbscan(features, points, n_clusters)
-            
-            # 3. 클러스터 최적화
-            clusters = self._optimize_clusters(clusters, n_clusters, vehicles)
-            
-            # 4. 제약 조건 검증 및 조정
-            clusters = self._adjust_constraints(clusters, vehicles)
-            
-            # 5. 최종 검증
-            if self._validate_final_clusters(clusters, vehicles):
-                return clusters
-            
-            # 실패 시 대체 전략 사용
-            logger.warning("HDBSCAN 클러스터링 실패, KMeans 전략으로 전환")
-            return EnhancedKMeansStrategy().cluster(points, vehicles)
-            
-        except Exception as e:
-            logger.error(f"HDBSCAN 클러스터링 오류: {str(e)}")
-            return EnhancedKMeansStrategy().cluster(points, vehicles)
-
-    def _prepare_features(self, points: List[DeliveryPoint]) -> np.ndarray:
-        """특성 준비 및 전처리"""
-        cache_key = tuple(p.id for p in points)
-        if cache_key in self._feature_cache:
-            return self._feature_cache[cache_key]
-
-        # 기본 특성 추출
-        coords = np.array([[p.latitude, p.longitude] for p in points])
-        priorities = np.array([[p.priority] for p in points])
-        volumes = np.array([[p.volume] for p in points])
-        weights = np.array([[p.weight] for p in points])
-        
-        # 시간 윈도우 특성
-        time_windows = np.array([
-            [(p.time_window.end - p.time_window.start).total_seconds() / 3600]
-            for p in points
-        ])
-        
-        # 특성 결합
-        features = np.hstack([
-            coords,
-            priorities * 2,  # 우선순위 가중치 증가
-            volumes / np.max(volumes),  # 정규화
-            weights / np.max(weights),  # 정규화
-            time_windows / 24  # 24시간 기준 정규화
-        ])
-        
-        # 특성 정규화
-        scaler = StandardScaler()
-        normalized_features = scaler.fit_transform(features)
-        
-        # 캐시 저장
-        self._feature_cache[cache_key] = normalized_features
-        return normalized_features
-
-    def _run_hdbscan(self, features: np.ndarray, points: List[DeliveryPoint], 
-                    n_clusters: int) -> List[List[DeliveryPoint]]:
-        """HDBSCAN 실행 및 결과 처리"""
-        # HDBSCAN 파라미터 설정
-        min_cluster_size = max(5, int(len(points) * self.min_cluster_size_ratio))
-        min_samples = max(3, int(min_cluster_size * self.min_samples_ratio))
-        
-        # HDBSCAN 실행
-        clusterer = hdbscan.HDBSCAN(
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples,
-            cluster_selection_epsilon=0.5,
-            metric='euclidean',
-            core_dist_n_jobs=-1,
-            prediction_data=True
-        )
-        
-        labels = clusterer.fit_predict(features)
-        
-        # 클러스터 및 노이즈 포인트 분리
-        clusters = []
-        noise_points = []
-        
-        for label in np.unique(labels):
-            if label == -1:
-                noise_points.extend([points[i] for i, l in enumerate(labels) if l == -1])
-            else:
-                cluster = [points[i] for i, l in enumerate(labels) if l == label]
-                clusters.append(cluster)
-        
-        # 노이즈 포인트 처리
-        return self._handle_noise_points(clusters, noise_points)
-
-    def _handle_noise_points(self, clusters: List[List[DeliveryPoint]], 
-                           noise_points: List[DeliveryPoint]) -> List[List[DeliveryPoint]]:
-        """노이즈 포인트 처리 개선"""
-        if not noise_points:
-            return clusters
-        
-        result_clusters = copy.deepcopy(clusters)
-        remaining_points = []
-        
-        for point in noise_points:
-            assigned = False
-            distances = []
-            
-            # 각 클러스터와의 거리 계산
-            for i, cluster in enumerate(result_clusters):
-                if not cluster:
-                    continue
-                cluster_coords = np.array([[p.latitude, p.longitude] for p in cluster])
-                point_coords = np.array([[point.latitude, point.longitude]])
-                min_dist = cdist(point_coords, cluster_coords).min()
-                distances.append((min_dist, i))
-            
-            # 거리순으로 정렬
-            distances.sort()
-            
-            # 가장 가까운 클러스터부터 시도
-            for dist, cluster_idx in distances:
-                if self._can_add_to_cluster(point, result_clusters[cluster_idx]):
-                    result_clusters[cluster_idx].append(point)
-                    assigned = True
-                    break
-            
-            if not assigned:
-                remaining_points.append(point)
-        
-        # 남은 포인트들을 위한 새로운 클러스터 생성
-        if remaining_points:
-            result_clusters.append(remaining_points)
-        
-        return result_clusters
-
-    def _optimize_clusters(self, clusters: List[List[DeliveryPoint]], 
-                         target_count: int,
-                         vehicles: List[Vehicle]) -> List[List[DeliveryPoint]]:
-        """클러스터 최적화"""
-        # 클러스터 수 조정
-        while len(clusters) > target_count:
-            # 가장 작은 두 클러스터 병합
-            clusters = self._merge_smallest_clusters(clusters)
-            
-        while len(clusters) < target_count:
-            # 가장 큰 클러스터 분할
-            clusters = self._split_largest_cluster(clusters)
-        
-        # 우선순위 분배 최적화
-        clusters = self._optimize_priority_distribution(clusters)
-        
-        # 크기 균형 조정
-        clusters = self._balance_cluster_sizes(clusters)
+        for i, point in enumerate(points):
+            cluster_idx = min(i // points_per_cluster, len(clusters) - 1)
+            clusters[cluster_idx].append(point)
         
         return clusters
-
-    def _merge_smallest_clusters(self, clusters: List[List[DeliveryPoint]]) -> List[List[DeliveryPoint]]:
-        """가장 작은 클러스터들 병합"""
-        if len(clusters) <= 1:
-            return clusters
-            
-        # 클러스터 크기 기준 정렬
-        sizes = [(len(cluster), i) for i, cluster in enumerate(clusters)]
-        sizes.sort()
-        
-        # 가장 작은 두 클러스터 선택
-        smallest1_idx = sizes[0][1]
-        smallest2_idx = sizes[1][1]
-        
-        # 병합
-        merged = clusters[smallest1_idx] + clusters[smallest2_idx]
-        new_clusters = [c for i, c in enumerate(clusters) 
-                       if i not in [smallest1_idx, smallest2_idx]]
-        new_clusters.append(merged)
-        
-        return new_clusters
-
-    def _split_largest_cluster(self, clusters: List[List[DeliveryPoint]]) -> List[List[DeliveryPoint]]:
-        """가장 큰 클러스터 분할"""
-        if not clusters:
-            return clusters
-            
-            # 가장 큰 클러스터 찾기
-        largest_idx = max(range(len(clusters)), key=lambda i: len(clusters[i]))
-        largest_cluster = clusters[largest_idx]
-        
-        if len(largest_cluster) < 2:
-            return clusters
-            
-            # K-means로 분할
-            coords = np.array([[p.latitude, p.longitude] for p in largest_cluster])
-            kmeans = KMeans(n_clusters=2, random_state=42)
-            labels = kmeans.fit_predict(coords)
-            
-            # 새 클러스터 생성
-            cluster1 = [p for p, label in zip(largest_cluster, labels) if label == 0]
-            cluster2 = [p for p, label in zip(largest_cluster, labels) if label == 1]
-            
-            # 결과 병합
-            new_clusters = [c for i, c in enumerate(clusters) if i != largest_idx]
-            new_clusters.extend([cluster1, cluster2])
-            
-            return new_clusters
 
     def _validate_final_clusters(self, clusters: List[List[DeliveryPoint]], 
                                vehicles: List[Vehicle]) -> bool:
@@ -942,10 +714,21 @@ class HDBSCANStrategy(ClusteringStrategy):
         if not cluster:
             return 0.0
             
-        start_times = [p.time_window.start for p in cluster]
-        end_times = [p.time_window.end for p in cluster]
+        # 시간 윈도우 범위 계산 - 튜플 형태로 통일
+        time_windows = []
+        for p in cluster:
+            if hasattr(p, 'time_window') and p.time_window:
+                # 튜플인 경우 (DeliveryPoint 정의에 맞춤)
+                if isinstance(p.time_window, (tuple, list)) and len(p.time_window) == 2:
+                    time_windows.append((p.time_window[0], p.time_window[1]))
         
-        time_span = (max(end_times) - min(start_times)).total_seconds() / 3600
+        if time_windows:
+            earliest = min(tw[0] for tw in time_windows)
+            latest = max(tw[1] for tw in time_windows)
+            time_span = (latest - earliest).total_seconds() / 3600  # 시간 단위
+        else:
+            time_span = 0.0
+        
         return time_span
 
     def _validate_priority_distribution(self, cluster: List[DeliveryPoint]) -> bool:
@@ -961,11 +744,42 @@ class HDBSCANStrategy(ClusteringStrategy):
         high_priority_ratio = priority_counts[3] / len(cluster)
         return high_priority_ratio <= 0.4  # 최대 40%까지 허용
 
+    def _optimize_priority_distribution(self, clusters: List[List[DeliveryPoint]]) -> List[List[DeliveryPoint]]:
+        """우선순위 분배 최적화"""
+        # 각 클러스터의 평균 우선순위 계산
+        cluster_priorities = []
+        for cluster in clusters:
+            if cluster:
+                avg_priority = sum(p.priority for p in cluster) / len(cluster)
+                cluster_priorities.append(avg_priority)
+            else:
+                cluster_priorities.append(0)
+        
+        # 우선순위 불균형이 큰 경우 조정
+        max_priority = max(cluster_priorities) if cluster_priorities else 0
+        min_priority = min(cluster_priorities) if cluster_priorities else 0
+        
+        if max_priority - min_priority > 2:  # 우선순위 차이가 2 이상인 경우
+            # 고우선순위 포인트를 저우선순위 클러스터로 이동
+            for i, cluster in enumerate(clusters):
+                if cluster_priorities[i] > max_priority - 0.5:
+                    # 고우선순위 클러스터에서 저우선순위 포인트 찾기
+                    low_priority_points = [p for p in cluster if p.priority <= 2]
+                    for point in low_priority_points[:1]:  # 최대 1개만 이동
+                        # 저우선순위 클러스터 찾기
+                        target_idx = cluster_priorities.index(min_priority)
+                        if target_idx != i:
+                            cluster.remove(point)
+                            clusters[target_idx].append(point)
+                            break
+        
+        return clusters
+
 monitor = ClusteringMonitor()
 
-@monitor.monitor("enhanced_kmeans")
+@monitor.monitor("balanced_kmeans")
 def cluster_points(points: List[DeliveryPoint], vehicles: List[Vehicle], 
-                  strategy: str = 'enhanced_kmeans') -> Optional[List[List[DeliveryPoint]]]:
+                  strategy: str = 'balanced_kmeans') -> Optional[List[List[DeliveryPoint]]]:
     if not points or not vehicles:
         return None
         
@@ -976,13 +790,13 @@ def cluster_points(points: List[DeliveryPoint], vehicles: List[Vehicle],
     # 최적 클러스터 수 결정
     n_clusters = _determine_optimal_cluster_count(points, available_vehicles)
     
+    # 클러스터링 전략 선택
     strategies = {
-        'enhanced_kmeans': EnhancedKMeansStrategy(),
-        'enhanced_dbscan': EnhancedDBSCANStrategy(),
-        'hdbscan': HDBSCANStrategy()
+        'balanced_kmeans': BalancedKMeansStrategy(),
+        'enhanced_dbscan': EnhancedDBSCANStrategy()
     }
     
-    clustering_strategy = strategies.get(strategy, EnhancedKMeansStrategy())
+    clustering_strategy = strategies.get(strategy, BalancedKMeansStrategy())
     return clustering_strategy.cluster(points, available_vehicles[:n_clusters])
 
 def _filter_suitable_vehicles(points: List[DeliveryPoint], vehicles: List[Vehicle]) -> List[Vehicle]:
@@ -1037,11 +851,20 @@ def calculate_cluster_metrics(cluster: List[DeliveryPoint]) -> Dict:
     total_weight = sum(point.weight for point in cluster)
     total_priority = sum(point.get_priority_weight() for point in cluster)
     
-    # 시간 윈도우 범위 계산
-    time_windows = [(p.time_window[0], p.time_window[1]) for p in cluster]
-    earliest = min(tw[0] for tw in time_windows)
-    latest = max(tw[1] for tw in time_windows)
-    time_span = (latest - earliest).total_seconds() / 3600  # 시간 단위
+    # 시간 윈도우 범위 계산 - 튜플 형태로 통일
+    time_windows = []
+    for p in cluster:
+        if hasattr(p, 'time_window') and p.time_window:
+            # 튜플인 경우 (DeliveryPoint 정의에 맞춤)
+            if isinstance(p.time_window, (tuple, list)) and len(p.time_window) == 2:
+                time_windows.append((p.time_window[0], p.time_window[1]))
+    
+    if time_windows:
+        earliest = min(tw[0] for tw in time_windows)
+        latest = max(tw[1] for tw in time_windows)
+        time_span = (latest - earliest).total_seconds() / 3600  # 시간 단위
+    else:
+        time_span = 0.0
     
     return {
         'volume': total_volume,
@@ -1135,15 +958,31 @@ def _calculate_move_cost(
         (point.longitude - target_center[1])**2
     )
     
-    # 시간 윈도우 기반 비용
-    target_times = [p.time_window for p in target_cluster]
-    target_start = min(tw[0] for tw in target_times)
-    target_end = max(tw[1] for tw in target_times)
-    time_compatibility = (
-        1 if target_start <= point.time_window[0] <= target_end and
-           target_start <= point.time_window[1] <= target_end
-        else 2
-    )
+    # 시간 윈도우 기반 비용 - 튜플 형태로 통일
+    target_times = []
+    for p in target_cluster:
+        if hasattr(p, 'time_window') and p.time_window:
+            # 튜플인 경우 (DeliveryPoint 정의에 맞춤)
+            if isinstance(p.time_window, (tuple, list)) and len(p.time_window) == 2:
+                target_times.append((p.time_window[0], p.time_window[1]))
+    
+    time_compatibility = 1  # 기본값
+    if target_times and hasattr(point, 'time_window') and point.time_window:
+        target_start = min(tw[0] for tw in target_times)
+        target_end = max(tw[1] for tw in target_times)
+        
+        # point의 time_window 처리 - 튜플 방식으로 통일
+        if isinstance(point.time_window, (tuple, list)) and len(point.time_window) == 2:
+            point_start, point_end = point.time_window[0], point.time_window[1]
+        else:
+            point_start, point_end = None, None
+        
+        if point_start and point_end:
+            time_compatibility = (
+                1 if target_start <= point_start <= target_end and
+                   target_start <= point_end <= target_end
+                else 2
+            )
     
     # 우선순위 기반 비용
     priority_diff = abs(

@@ -1,6 +1,6 @@
 import pandas as pd
 from sqlalchemy import create_engine
-from src.config import DB_CONFIG
+from config.db_config import DB_CONFIG
 
 def get_engine():
     conf = DB_CONFIG
@@ -12,7 +12,7 @@ def fetch_orders():
 
     # Prepare parameters
     date = '2025-04-17'
-    region = f"경기도 수원%"
+    region1 = f"경기도 %"
 
     query = """
     SELECT DISTINCT I.invoice_no    AS id
@@ -35,6 +35,7 @@ def fetch_orders():
        AND D.morning_schedule_date BETWEEN CONCAT(%s, ' 00:00:00') AND CONCAT(%s, ' 23:59:59')
        AND D.recipient_road_address LIKE %s
     """
-    params = (date, date, region)
+          #  AND D.recipient_road_address LIKE %s
+    params = (date, date, region1)
 
     return pd.read_sql(query, engine, params=params)

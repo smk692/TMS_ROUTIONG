@@ -12,10 +12,10 @@ class DeliveryPoint:
     address2: str
     time_window: Tuple[datetime, datetime]  # 배송 가능 시간대
     service_time: int  # 예상 서비스 시간(분)
-    volume: float  # 화물 부피(m³)
-    weight: float  # 화물 무게(kg)
     special_requirements: List[str]  # 특수 요구사항
-    priority: int  # 우선순위 (1: 최우선 ~ 5: 최저)
+    volume: float = 0.0  # 화물 부피(m³) - 기본값 0.0 (부피 정보 없어도 작동)
+    weight: float = 0.0  # 화물 무게(kg) - 기본값 0.0
+    priority: int = 3  # 우선순위 (1: 최우선 ~ 5: 최저)
 
     @classmethod
     def from_dict(cls, data: dict) -> 'DeliveryPoint':
@@ -31,9 +31,9 @@ class DeliveryPoint:
                 datetime.fromisoformat(data['time_window'][1])
             ) if 'time_window' in data else (None, None),
             service_time=data.get('service_time', 5),
-            volume=data.get('volume', 0.0),
-            weight=data.get('weight', 0.0),
             special_requirements=data.get('special_requirements', []),
+            volume=data.get('volume', 0.0),  # 부피 정보 없으면 0.0 사용
+            weight=data.get('weight', 0.0),  # 무게 정보 없으면 0.0 사용
             priority=data.get('priority', 3)
         )
 
@@ -50,9 +50,9 @@ class DeliveryPoint:
                 self.time_window[1].isoformat()
             ) if all(self.time_window) else None,
             'service_time': self.service_time,
+            'special_requirements': self.special_requirements,
             'volume': self.volume,
             'weight': self.weight,
-            'special_requirements': self.special_requirements,
             'priority': self.priority
         }
 

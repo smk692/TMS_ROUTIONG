@@ -25,6 +25,8 @@ class Route:
     start_time: datetime
     end_time: datetime
     status: str  # 'PLANNED', 'IN_PROGRESS', 'COMPLETED', 'FAILED'
+    depot_id: Optional[str] = None  # 물류센터 ID 추가
+    depot_name: Optional[str] = None  # 물류센터 이름 추가
 
     @property
     def is_valid(self) -> bool:
@@ -36,9 +38,17 @@ class Route:
         if self.start_time < self.vehicle.start_time or self.end_time > self.vehicle.end_time:
             return False
 
-        # 적재량 제약 검사
-        if (self.total_load['volume'] > self.vehicle.capacity.volume or
-            self.total_load['weight'] > self.vehicle.capacity.weight):
+        # 적재량 제약 검사 - 품목 정보가 있는 경우에만 확인
+        volume_exceeded = False
+        weight_exceeded = False
+        
+        if any(p.point.volume > 0 for p in self.points):
+            volume_exceeded = self.total_load['volume'] > self.vehicle.capacity.volume
+            
+        if any(p.point.weight > 0 for p in self.points):
+            weight_exceeded = self.total_load['weight'] > self.vehicle.capacity.weight
+            
+        if volume_exceeded or weight_exceeded:
             return False
 
         # 연속성 검사
@@ -64,12 +74,19 @@ class Route:
 
     def can_add_point(self, point: DeliveryPoint) -> bool:
         """새로운 배송지점을 추가할 수 있는지 확인"""
-        # 차량 용량 검사
-        new_volume = self.total_load['volume'] + point.volume
-        new_weight = self.total_load['weight'] + point.weight
+        # 차량 용량 검사 - 품목 정보가 있는 경우에만 확인
+        volume_check = True
+        weight_check = True
         
-        if (new_volume > self.vehicle.capacity.volume or
-            new_weight > self.vehicle.capacity.weight):
+        if point.volume > 0:
+            new_volume = self.total_load['volume'] + point.volume
+            volume_check = new_volume <= self.vehicle.capacity.volume
+            
+        if point.weight > 0:
+            new_weight = self.total_load['weight'] + point.weight
+            weight_check = new_weight <= self.vehicle.capacity.weight
+        
+        if not (volume_check and weight_check):
             return False
 
         # 특수 요구사항 검사
@@ -106,6 +123,8 @@ class Route:
         return {
             'route_id': self.id,
             'vehicle_id': self.vehicle.id,
+            'depot_id': self.depot_id,
+            'depot_name': self.depot_name,
             'num_points': len(self.points),
             'total_distance': self.total_distance,
             'total_time': self.total_time,
@@ -120,6 +139,8 @@ class Route:
         return {
             'id': self.id,
             'vehicle': self.vehicle.to_dict(),
+            'depot_id': self.depot_id,
+            'depot_name': self.depot_name,
             'points': [
                 {
                     'point': p.point.to_dict(),
@@ -137,3 +158,17 @@ class Route:
             'end_time': self.end_time.isoformat(),
             'status': self.status
         }
+
+    def is_capacity_exceeded(self) -> bool:
+        """용량 초과 여부 확인"""
+        # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+        volume_exceeded = False
+        if any(p.point.volume > 0 for p in self.points):
+            volume_exceeded = self.total_load['volume'] > self.vehicle.capacity.volume
+        
+        # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+        weight_exceeded = False
+        if any(p.point.weight > 0 for p in self.points):
+            weight_exceeded = self.total_load['weight'] > self.vehicle.capacity.weight
+        
+        return volume_exceeded or weight_exceeded

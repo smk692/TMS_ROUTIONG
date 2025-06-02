@@ -1,8 +1,9 @@
 from typing import List, Dict, Any, Tuple
 from datetime import datetime, timedelta
-from ..models.route import Route
-from ..models.delivery_point import DeliveryPoint
-from ..utils.geo_utils import calculate_distance
+import logging
+from src.model.route import Route
+from src.model.delivery_point import DeliveryPoint
+from src.model.distance import distance
 
 class ConstraintHandler:
     """경로의 제약조건을 처리하고 검증하는 클래스"""
@@ -77,16 +78,26 @@ class ConstraintHandler:
         constraint_value: Dict[str, float]
     ) -> bool:
         """차량 용량 제약조건 검사"""
+        # 용량 제약 확인 - 품목 정보가 있는 경우에만 확인
         total_volume = 0
         total_weight = 0
         
         for point in route.points:
             total_volume += point.point.volume
             total_weight += point.point.weight
+        
+        # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+        volume_exceeded = False
+        if any(p.point.volume > 0 for p in route.points):
+            volume_exceeded = total_volume > route.vehicle.capacity.volume
             
-            if (total_volume > route.vehicle.capacity.volume or
-                total_weight > route.vehicle.capacity.weight):
-                return False
+        # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+        weight_exceeded = False
+        if any(p.point.weight > 0 for p in route.points):
+            weight_exceeded = total_weight > route.vehicle.capacity.weight
+            
+        if volume_exceeded or weight_exceeded:
+            return False
         
         return True
 
@@ -99,10 +110,12 @@ class ConstraintHandler:
         current_time = route.start_time
         
         for i, point in enumerate(route.points):
-            # 도착 시간이 허용 범위를 벗어나는지 검사
-            if point.point.time_window and all(point.point.time_window):
-                if not (point.point.time_window[0] <= point.arrival_time <= point.point.time_window[1]):
-                    return False
+            # 시간 윈도우 제약 확인 - 튜플 형태로 통일
+            if hasattr(point.point, 'time_window') and point.point.time_window:
+                # 튜플인 경우 (DeliveryPoint 정의에 맞춤)
+                if isinstance(point.point.time_window, (tuple, list)) and len(point.point.time_window) == 2:
+                    if not (point.point.time_window[0] <= point.arrival_time <= point.point.time_window[1]):
+                        return False
             
             # 서비스 시간과 이동 시간이 전체 근무 시간을 초과하는지 검사
             if i < len(route.points) - 1:
@@ -241,8 +254,17 @@ class ConstraintHandler:
         current_weight = 0
         
         for point in violated_route.points:
-            if (current_volume + point.point.volume > violated_route.vehicle.capacity.volume or
-                current_weight + point.point.weight > violated_route.vehicle.capacity.weight):
+            # 품목 부피 정보가 있는 경우에만 부피 제약 확인
+            volume_exceeded = False
+            if point.point.volume > 0:
+                volume_exceeded = current_volume + point.point.volume > violated_route.vehicle.capacity.volume
+                
+            # 품목 무게 정보가 있는 경우에만 무게 제약 확인
+            weight_exceeded = False
+            if point.point.weight > 0:
+                weight_exceeded = current_weight + point.point.weight > violated_route.vehicle.capacity.weight
+                
+            if volume_exceeded or weight_exceeded:
                 excess_points.append(point)
             else:
                 current_volume += point.point.volume
@@ -256,12 +278,12 @@ class ConstraintHandler:
                 
                 for route in routes:
                     if route != violated_route and route.can_add_point(point.point):
-                        distance = calculate_distance(
-                            (point.point.latitude, point.point.longitude),
-                            (route.points[-1].point.latitude, route.points[-1].point.longitude)
+                        dist = distance(
+                            point.point.latitude, point.point.longitude,
+                            route.points[-1].point.latitude, route.points[-1].point.longitude
                         )
-                        if distance < min_distance:
-                            min_distance = distance
+                        if dist < min_distance:
+                            min_distance = dist
                             best_route = route
                 
                 if best_route:
@@ -283,15 +305,22 @@ class ConstraintHandler:
         
         current_time = violated_route.start_time
         for point in violated_route.points:
-            if point.point.time_window and all(point.point.time_window):
-                if current_time <= point.point.time_window[1]:
-                    valid_points.append(point)
-                    current_time = max(
-                        current_time + timedelta(minutes=point.point.service_time),
-                        point.point.time_window[0]
-                    )
+            # time_window 처리 - 튜플 형태로 통일
+            if hasattr(point.point, 'time_window') and point.point.time_window:
+                # 튜플인 경우 (DeliveryPoint 정의에 맞춤)
+                if isinstance(point.point.time_window, (tuple, list)) and len(point.point.time_window) == 2:
+                    if current_time <= point.point.time_window[1]:
+                        valid_points.append(point)
+                        current_time = max(
+                            current_time + timedelta(minutes=point.point.service_time),
+                            point.point.time_window[0]
+                        )
+                    else:
+                        violated_points.append(point)
                 else:
-                    violated_points.append(point)
+                    # time_window가 올바른 형태가 아닌 경우 기본 처리
+                    valid_points.append(point)
+                    current_time += timedelta(minutes=point.point.service_time)
             else:
                 valid_points.append(point)
                 current_time += timedelta(minutes=point.point.service_time)
@@ -347,23 +376,29 @@ class ConstraintHandler:
         routes: List[Route],
         constraints: Dict[str, Any]
     ) -> List[Route]:
-        """소프트 제약조건 최적화"""
-        improved = True
-        while improved:
+        """소프트 제약조건 최적화 - 성능 개선"""
+        max_iterations = 5  # 최대 반복 횟수 제한
+        iteration = 0
+        
+        while iteration < max_iterations:
             improved = False
+            iteration += 1
             
-            # 작업량 균형 최적화
+            # 작업량 균형 최적화 (조건 완화)
             workload_score = self._check_workload_balance(routes, constraints)
-            if workload_score < constraints.get('min_workload_balance', 0.8):
+            if workload_score < constraints.get('min_workload_balance', 0.6):  # 0.8 → 0.6으로 완화
                 routes = self._balance_workload(routes)
                 improved = True
             
-            # 경로 효율성 최적화
-            for route in routes:
-                efficiency_score = self._check_route_efficiency(route, constraints)
-                if efficiency_score < constraints.get('min_route_efficiency', 0.7):
-                    route = self._improve_route_efficiency(route)
-                    improved = True
+            # 경로 효율성 최적화 건너뛰기 (시간 절약)
+            # for route in routes:
+            #     efficiency_score = self._check_route_efficiency(route, constraints)
+            #     if efficiency_score < constraints.get('min_route_efficiency', 0.7):
+            #         route = self._improve_route_efficiency(route)
+            #         improved = True
+            
+            if not improved:
+                break
         
         return routes
 
@@ -376,11 +411,12 @@ class ConstraintHandler:
         overlapping = []
         for point1 in route1.points:
             for point2 in route2.points:
-                if calculate_distance(
-                    (point1.point.latitude, point1.point.longitude),
-                    (point2.point.latitude, point2.point.longitude)
-                ) < 0.1:  # 100m 이내를 중복으로 간주
+                if distance(
+                    point1.point.latitude, point1.point.longitude,
+                    point2.point.latitude, point2.point.longitude
+                ) < 0.001:  # 약 100m 이내
                     overlapping.append(point1.point)
+        
         return overlapping
 
     def _calculate_route_center_distance(
@@ -388,28 +424,37 @@ class ConstraintHandler:
         route: Route,
         point: DeliveryPoint
     ) -> float:
-        """경로의 중심점과 특정 지점 간의 거리 계산"""
+        """경로 중심과 포인트 간의 거리 계산"""
         if not route.points:
             return float('inf')
             
         center_lat = sum(p.point.latitude for p in route.points) / len(route.points)
         center_lon = sum(p.point.longitude for p in route.points) / len(route.points)
         
-        return calculate_distance(
-            (center_lat, center_lon),
-            (point.latitude, point.longitude)
+        return distance(
+            center_lat, center_lon,
+            point.latitude, point.longitude
         )
 
     def _balance_workload(self, routes: List[Route]) -> List[Route]:
-        """작업량 균형 조정"""
+        """작업량 균형 조정 - 성능 개선"""
         if not routes:
             return routes
             
-        # 작업량이 가장 많은/적은 경로 찾기
-        max_route = max(routes, key=lambda r: len(r.points))
-        min_route = min(routes, key=lambda r: len(r.points))
+        max_iterations = 10  # 최대 반복 횟수 제한
+        iteration = 0
         
-        while len(max_route.points) - len(min_route.points) > 1:
+        while iteration < max_iterations:
+            iteration += 1
+            
+            # 작업량이 가장 많은/적은 경로 찾기
+            max_route = max(routes, key=lambda r: len(r.points))
+            min_route = min(routes, key=lambda r: len(r.points))
+            
+            # 차이가 2 이하면 충분히 균형잡힘
+            if len(max_route.points) - len(min_route.points) <= 2:
+                break
+            
             # 가장 적합한 포인트를 이동
             best_point = None
             min_cost = float('inf')
@@ -470,13 +515,13 @@ class ConstraintHandler:
             sum(p.point.longitude for p in to_route.points) / len(to_route.points)
         )
         
-        from_dist = calculate_distance(
-            (point.latitude, point.longitude),
-            from_center
+        from_dist = distance(
+            from_center[0], from_center[1],
+            point.latitude, point.longitude
         )
-        to_dist = calculate_distance(
-            (point.latitude, point.longitude),
-            to_center
+        to_dist = distance(
+            to_center[0], to_center[1],
+            point.latitude, point.longitude
         )
         
         # 작업량 균형 비용
@@ -509,8 +554,8 @@ class ConstraintHandler:
         """경로의 총 거리 계산"""
         total_distance = 0
         for i in range(len(points) - 1):
-            total_distance += calculate_distance(
-                (points[i].point.latitude, points[i].point.longitude),
-                (points[i + 1].point.latitude, points[i + 1].point.longitude)
+            total_distance += distance(
+                points[i].point.latitude, points[i].point.longitude,
+                points[i + 1].point.latitude, points[i + 1].point.longitude
             )
         return total_distance

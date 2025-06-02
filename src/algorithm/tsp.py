@@ -145,8 +145,15 @@ class TSPSolver:
         current_distance = initial_distance
         no_improve_count = 0
         
+        # 작은 경로는 간단한 최적화만 수행
+        if len(best_route) <= 3:
+            logger.info(f"작은 경로({len(best_route)}개)는 기본 최적화로 처리")
+            return best_route, best_distance
+        
         # 이웃 탐색 범위를 제한
         max_segment_size = min(20, len(best_route) // 4)
+        if max_segment_size < 3:
+            max_segment_size = len(best_route) - 1
         
         for iteration in range(max_iterations):
             if no_improve_count >= max_no_improve:
@@ -156,15 +163,25 @@ class TSPSolver:
             temp = temperature / (1 + iteration)
             improved = False
             
+            # 안전한 범위에서 구간 선택
+            if len(best_route) < 4:
+                break  # 너무 작은 경로는 더 이상 최적화하지 않음
+                
+            max_start = len(best_route) - max_segment_size - 1
+            if max_start < 1:
+                max_start = 1
+                
             # 무작위로 구간 선택하여 최적화
-            i = random.randint(1, len(best_route) - max_segment_size - 1)
-            segment_size = random.randint(2, max_segment_size)
+            i = random.randint(1, max_start)
+            segment_size = min(max_segment_size, len(best_route) - i - 1)
+            if segment_size < 2:
+                segment_size = 2
             
             # 3-opt 이동 시도
-            for j in range(i + 2, i + segment_size - 2):
+            for j in range(i + 2, min(i + segment_size - 2, len(best_route) - 1)):
                 if improved:
                     break
-                for k in range(j + 2, i + segment_size):
+                for k in range(j + 2, min(i + segment_size, len(best_route))):
                     # 새로운 경로 생성
                     new_route = (
                         current_route[:i] +
@@ -229,6 +246,40 @@ class TSPSolver:
         return perturbed
 
 def solve_tsp(points: List[DeliveryPoint]) -> Tuple[List[DeliveryPoint], float]:
-    """TSP 해결을 위한 편의 함수"""
-    solver = TSPSolver(points)
-    return solver.solve()
+    """TSP 해결을 위한 편의 함수 - 소규모 클러스터 안전 처리"""
+    try:
+        if not points:
+            logger.warning("⚠️ 빈 배송지 리스트가 입력되었습니다.")
+            return [], 0.0
+        
+        if len(points) == 1:
+            logger.info("📍 배송지가 1개뿐입니다. TSP 최적화 건너뜀.")
+            return points, 0.0
+        
+        if len(points) == 2:
+            logger.info("📍 배송지가 2개입니다. 간단한 경로 계산.")
+            dist = distance(points[0].latitude, points[0].longitude, 
+                          points[1].latitude, points[1].longitude)
+            return points, dist
+            
+        # 3개 이상일 때만 복잡한 TSP 알고리즘 적용
+        logger.info(f"🔍 TSP 최적화 시작: {len(points)}개 배송지")
+        solver = TSPSolver(points)
+        optimized_points, total_distance = solver.solve()
+        
+        logger.info(f"✅ TSP 최적화 완료: {total_distance:.2f}km")
+        return optimized_points, total_distance
+        
+    except Exception as e:
+        logger.error(f"❌ TSP 해결 중 오류 발생: {str(e)}")
+        logger.warning("⚠️ 기본 순서로 대체 처리합니다.")
+        
+        # 오류 발생 시 기본 순서 반환 (완전 실패 방지)
+        if points:
+            total_dist = 0.0
+            for i in range(len(points) - 1):
+                total_dist += distance(points[i].latitude, points[i].longitude,
+                                     points[i + 1].latitude, points[i + 1].longitude)
+            return points, total_dist
+        else:
+            return [], 0.0

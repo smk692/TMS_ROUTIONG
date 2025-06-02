@@ -12,6 +12,7 @@ class VehicleCapacity:
 class Vehicle:
     """차량 정보를 담는 클래스"""
     id: str
+    name: str  # 차량 이름 (예: "1호차", "2호차")
     type: str  # 차량 유형 (예: 'TRUCK_1TON', 'VAN_1TON' 등)
     capacity: VehicleCapacity
     features: List[str]  # 특수 기능 (예: ['REFRIGERATED', 'LIFT'])
@@ -26,6 +27,7 @@ class Vehicle:
         """딕셔너리에서 Vehicle 객체 생성"""
         return cls(
             id=data['id'],
+            name=data['name'],
             type=data['type'],
             capacity=VehicleCapacity(
                 volume=data['capacity']['volume'],
@@ -46,6 +48,7 @@ class Vehicle:
         """Vehicle 객체를 딕셔너리로 변환"""
         return {
             'id': self.id,
+            'name': self.name,
             'type': self.type,
             'capacity': {
                 'volume': self.capacity.volume,
@@ -67,10 +70,17 @@ class Vehicle:
         if self.current_load is None:
             return True
         
-        return (
-            self.current_load.volume + delivery_point.volume <= self.capacity.volume and
-            self.current_load.weight + delivery_point.weight <= self.capacity.weight
-        )
+        # 품목 부피가 0인 경우 부피 제약 무시 (부피 정보 없음)
+        volume_check = True
+        if delivery_point.volume > 0:
+            volume_check = self.current_load.volume + delivery_point.volume <= self.capacity.volume
+        
+        # 품목 무게가 0인 경우 무게 제약 무시 (무게 정보 없음)
+        weight_check = True
+        if delivery_point.weight > 0:
+            weight_check = self.current_load.weight + delivery_point.weight <= self.capacity.weight
+        
+        return volume_check and weight_check
 
     def has_required_features(self, requirements: List[str]) -> bool:
         """필요한 특수 기능을 가지고 있는지 확인"""
