@@ -1,0 +1,32 @@
+# 개발용 Dockerfile (Docker Compose 전용)
+FROM python:3.11-slim
+
+# 작업 디렉토리 설정
+WORKDIR /app
+
+# 시스템 패키지 업데이트 및 필수 도구 설치
+RUN apt-get update && apt-get install -y \
+    curl \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 의존성 설치
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 개발용 도구 추가 설치
+RUN pip install --no-cache-dir \
+    pytest \
+    pytest-asyncio \
+    black \
+    flake8 \
+    mypy
+
+# 애플리케이션 코드 복사 (개발 시에는 볼륨 마운트 사용)
+COPY . .
+
+# 헬스체크용 포트 노출
+EXPOSE 8000
+
+# 개발 서버 실행 (docker-compose에서 오버라이드됨)
+CMD ["chalice", "local", "--host", "0.0.0.0", "--port", "8000"] 
