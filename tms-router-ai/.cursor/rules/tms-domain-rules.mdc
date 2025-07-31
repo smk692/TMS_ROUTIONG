@@ -1,0 +1,121 @@
+# TMS 도메인 모델링 규칙
+
+## 🚛 핵심 도메인 엔티티
+
+### 1. Vehicle (차량)
+```python
+@dataclass
+class Vehicle:
+    vehicle_id: str
+    capacity: float          # 적재 용량 (톤)
+    current_location: Coordinate
+    status: VehicleStatus    # AVAILABLE, BUSY, MAINTENANCE
+    driver_id: Optional[str]
+    fuel_efficiency: float   # km/L
+    
+    def can_handle_load(self, weight: float) -> bool:
+        return self.capacity >= weight and self.status == VehicleStatus.AVAILABLE
+```
+
+### 2. DeliveryOrder (배송 주문)
+```python
+@dataclass
+class DeliveryOrder:
+    order_id: str
+    pickup_location: Coordinate
+    delivery_location: Coordinate
+    weight: float
+    priority: Priority       # HIGH, MEDIUM, LOW
+    time_window: TimeWindow  # 배송 시간 제약
+    special_requirements: List[str]  # 냉장, 위험물 등
+```
+
+### 3. Route (경로)
+```python
+@dataclass  
+class Route:
+    route_id: str
+    vehicle_id: str
+    orders: List[DeliveryOrder]
+    waypoints: List[Coordinate]
+    estimated_distance: float
+    estimated_duration: timedelta
+    total_cost: float
+```
+
+## 🎯 TMS 배차 시나리오별 프롬프트 매핑
+
+### VRP (Vehicle Routing Problem)
+- **상황**: 다중 차량, 다중 목적지
+- **AI 역할**: 차량별 최적 경로 및 주문 할당
+- **프롬프트 키워드**: "multi_vehicle_optimization"
+
+### Load Consolidation
+- **상황**: 소량 다수 주문의 통합 배송
+- **AI 역할**: 효율적 적재 및 경로 통합
+- **프롬프트 키워드**: "load_consolidation"
+
+### Emergency Dispatch
+- **상황**: 긴급 배송 요청 발생
+- **AI 역할**: 기존 계획 재조정 및 긴급 할당
+- **프롬프트 키워드**: "emergency_reallocation"
+
+### Real-time Adjustment
+- **상황**: 교통 상황, 차량 고장 등 돌발 상황
+- **AI 역할**: 실시간 경로 수정 및 대안 제시
+- **프롬프트 키워드**: "realtime_adjustment"
+
+## 🔒 비즈니스 제약조건
+
+### 차량 제약
+- 최대 근무 시간: 8시간/일
+- 연료 제한: 400km 연속 운행
+- 적재 중량 제한: 차량별 capacity 준수
+
+### 배송 제약
+- 시간 창 준수: 고객 지정 시간대
+- 특수 화물: 냉장, 위험물 분리 운송
+- 우선순위: HIGH > MEDIUM > LOW
+
+### 비용 제약
+- 연료비 최소화
+- 총 운행 거리 최소화
+- 차량 가동률 최대화
+
+## 📊 성과 지표 (KPI)
+
+### 효율성 지표
+```python
+class TmsKpi:
+    vehicle_utilization_rate: float     # 차량 가동률
+    delivery_success_rate: float        # 배송 성공률
+    on_time_delivery_rate: float        # 정시 배송률
+    cost_per_delivery: float            # 배송당 비용
+    average_delivery_time: timedelta    # 평균 배송 시간
+```
+
+### AI 성과 측정
+- **프롬프트 정확도**: AI 제안 vs 실제 채택률
+- **개선 효과**: 피드백 반영 후 성과 향상도
+- **의사결정 속도**: 배차 계획 수립 시간
+
+## 🔄 피드백 분류
+
+### 긍정적 피드백
+- "효율적인 경로였습니다"
+- "연료비가 절약되었습니다"
+- "고객 만족도가 높았습니다"
+
+### 부정적 피드백
+- "교통 체증으로 지연되었습니다"
+- "차량 용량이 부족했습니다"
+- "고객 시간 요구사항을 충족하지 못했습니다"
+
+### 개선 요청
+- "다음에는 더 짧은 경로로 제안해주세요"
+- "연료 효율성을 더 고려해주세요"
+- "긴급 주문 처리 방식을 개선해주세요"
+description:
+globs:
+alwaysApply: false
+---

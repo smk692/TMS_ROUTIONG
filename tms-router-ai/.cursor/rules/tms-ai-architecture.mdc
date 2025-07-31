@@ -1,0 +1,44 @@
+# TMS Router AI - 시스템 아키텍처 규칙
+
+## 🎯 프로젝트 개요
+- **목적**: AI 기반 TMS 배차 시스템
+- **핵심 접근**: 알고리즘 직접 구현 X, AI(GPT) 위임 O
+- **아키텍처**: Clean Architecture + 서버리스 (AWS Lambda)
+
+## 🏗️ 시스템 플로우
+```
+Application → Lambda → 파라미터 분석 → 프롬프트 선택 → GPT 호출 → 결과 반환
+                ↓
+        Redis 메모리 저장소 ← 피드백 처리 ← 사용자 피드백
+```
+
+## 🗄️ 저장소 아키텍처
+- **로컬 개발**: Docker Redis
+- **프로덕션**: ElastiCache Redis
+
+## 📁 디렉토리 구조 (Clean Architecture)
+```
+src/
+├── domain/           # 비즈니스 로직 (TMS 엔티티, 규칙)
+├── use_cases/        # 애플리케이션 로직
+├── interfaces/       # 추상화 계층
+├── infrastructure/   # 외부 의존성 (AWS, DB, AI)
+├── presentation/     # API 핸들러
+└── shared/          # 공통 유틸리티
+```
+
+## 🔗 의존성 규칙
+- Domain → 어떤 레이어에도 의존하지 않음
+- Use Cases → Domain만 의존
+- Infrastructure → Domain, Use Cases 의존 가능
+- Presentation → Use Cases만 의존
+
+## 🚀 배포 환경
+- **서버리스**: AWS Lambda 함수
+- **API**: REST via API Gateway
+- **메모리**: DynamoDB or Redis
+- **AI**: OpenAI GPT via LangChain
+description:
+globs:
+alwaysApply: false
+---

@@ -1,0 +1,68 @@
+# AI 프롬프트 엔지니어링 규칙
+
+## 🎯 핵심 원칙
+- **직접 알고리즘 구현 금지**: 모든 TMS 로직은 AI에 위임
+- **프롬프트 기반 접근**: 파라미터 → 프롬프트 선택 → GPT 실행
+- **대화 메모리 유지**: 이전 결정과 피드백 기억
+
+## 🔧 필수 라이브러리
+```python
+from langchain.chat_models import ChatOpenAI
+from langchain.memory import ConversationBufferMemory
+from langgraph import Graph, StateGraph
+from langchain.prompts import PromptTemplate, ChatPromptTemplate
+```
+
+## 📝 프롬프트 구조 템플릿
+```python
+TMS_PROMPT_TEMPLATE = """
+당신은 TMS 배차 전문가입니다.
+
+**현재 상황**: {situation_type}
+**입력 데이터**: {input_parameters}
+**제약 조건**: {constraints}
+**이전 피드백**: {previous_feedback}
+
+다음 단계로 분석해주세요:
+1. 상황 분석
+2. 최적화 요소 식별
+3. 해결책 제시
+4. 근거 설명
+
+답변 형식: JSON
+{{
+  "analysis": "상황 분석",
+  "solution": "배차 계획",
+  "reasoning": "판단 근거",
+  "confidence": 0.95
+}}
+"""
+```
+
+## 🎪 프롬프트 패턴 매칭
+- **VRP (Vehicle Routing Problem)**: 다중 차량 경로 최적화
+- **TSP (Traveling Salesman)**: 단일 차량 최적 경로
+- **Load Balancing**: 차량별 적재량 균형화
+- **Real-time Adjustment**: 실시간 경로 수정
+- **Emergency Dispatch**: 긴급 배송 처리
+
+## 🔄 피드백 처리
+```python
+def process_feedback(result, feedback):
+    """
+    배차 결과에 대한 피드백을 메모리에 저장하고
+    다음 프롬프트에 반영
+    """
+    # 메모리 업데이트 로직
+    # 선호도 패턴 학습
+    # 프롬프트 개선
+```
+
+## 🎯 Chain of Thought 적용
+- 모든 TMS 결정은 단계별 추론 과정 포함
+- 투명한 의사결정 과정 제공
+- 디버깅 및 개선점 식별 용이
+description:
+globs:
+alwaysApply: false
+---

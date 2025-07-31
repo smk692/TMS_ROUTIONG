@@ -1,0 +1,118 @@
+# Clean Code & Clean Architecture 표준
+
+## 🎯 Clean Code DIY 원칙 (엄격 준수)
+
+### 1. 네이밍 규칙
+```python
+# ✅ Good
+def calculate_optimal_route_for_vehicles(vehicles: List[Vehicle]) -> RouteResult:
+    pass
+
+class TmsRoutingEngine:
+    pass
+
+# ❌ Bad  
+def calc(v):
+    pass
+
+class TRE:
+    pass
+```
+
+### 2. 함수 설계
+- **단일 책임**: 하나의 함수는 하나의 일만
+- **순수 함수 선호**: 부작용 최소화
+- **최대 20줄**: 함수 길이 제한
+- **매개변수 4개 이하**: 너무 많은 파라미터 금지
+
+```python
+# ✅ Good
+def select_prompt_by_parameters(params: TmsParameters) -> PromptTemplate:
+    situation_type = analyze_situation(params)
+    return PROMPT_PATTERNS[situation_type]
+
+# ❌ Bad
+def process(a, b, c, d, e, f, g):  # 너무 많은 파라미터
+    # 100줄 이상의 복잡한 로직
+```
+
+### 3. 클래스 설계
+- **SRP (Single Responsibility Principle)**: 단일 책임
+- **OCP (Open/Closed Principle)**: 확장에 열려있고 수정에 닫혀있음
+- **DIP (Dependency Inversion)**: 추상화에 의존
+
+```python
+# ✅ Good - 인터페이스 중심 설계
+from abc import ABC, abstractmethod
+
+class AIPromptEngine(ABC):
+    @abstractmethod
+    def select_prompt(self, params: TmsParameters) -> PromptTemplate:
+        pass
+
+class LangChainPromptEngine(AIPromptEngine):
+    def select_prompt(self, params: TmsParameters) -> PromptTemplate:
+        # 구체적 구현
+        pass
+```
+
+## 🏗️ Clean Architecture 레이어 규칙
+
+### Domain Layer (최내부)
+```python
+# domain/entities/
+class Vehicle:
+    """TMS 차량 엔티티 - 비즈니스 규칙만 포함"""
+    pass
+
+class Route:
+    """경로 엔티티"""
+    pass
+
+# domain/value_objects/
+class Coordinate:
+    """좌표 값 객체"""
+    pass
+```
+
+### Use Cases Layer
+```python
+# use_cases/
+class OptimizeRouteUseCase:
+    def __init__(self, ai_engine: AIPromptEngine):
+        self._ai_engine = ai_engine
+    
+    def execute(self, request: RouteOptimizationRequest) -> RouteResult:
+        # 비즈니스 로직
+        pass
+```
+
+### Infrastructure Layer
+```python
+# infrastructure/ai/
+class LangChainAIService:
+    """외부 AI 서비스 구현체"""
+    pass
+
+# infrastructure/persistence/
+class DynamoDBMemoryRepository:
+    """대화 메모리 저장소"""
+    pass
+```
+
+## 🚫 금지사항
+- **전역 변수 사용 금지**
+- **하드코딩 값 금지** (상수로 정의)
+- **긴 조건문 금지** (Early Return 사용)
+- **중첩 깊이 3단계 초과 금지**
+- **매직 넘버/문자열 금지**
+
+## ✅ 필수사항
+- **타입 힌트 100% 적용**
+- **Docstring 모든 public 메서드**
+- **예외 처리 필수**
+- **로깅 적절히 활용**
+description:
+globs:
+alwaysApply: false
+---

@@ -1,0 +1,479 @@
+# Chalice 서버리스 아키텍처 규칙
+
+## 🚀 Chalice 프레임워크 구조
+
+### 프로젝트 기본 구조
+```
+tms-router-ai/
+├── app.py                 # Chalice 메인 애플리케이션
+├── .chalice/
+│   ├── config.json       # 배포 설정
+│   └── deployed/         # 배포 정보
+├── requirements.txt      # 의존성
+├── src/                  # 비즈니스 로직 (Clean Architecture)
+└── tests/               # 테스트
+```
+
+### 핵심 Chalice 앱 패턴
+```python
+# app.py
+import json
+import logging
+from chalice import Chalice, Response
+from typing import Dict, Any
+
+from src.infrastructure.ai.langchain_service import LangChainAIService
+from src.use_cases.optimize_route_use_case import OptimizeRouteUseCase
+from src.presentation.request_validators import validate_tms_request
+from src.shared.exceptions import ValidationError, AIServiceError
+
+app = Chalice(app_name='tms-router-ai')
+app.debug = True
+
+# 로깅 설정
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# 글로벌 객체 초기화 (Cold Start 최적화)
+ai_service = None
+route_optimizer = None
+
+def get_ai_service():
+    """AI 서비스 싱글톤 패턴"""
+    global ai_service
+    if ai_service is None:
+        ai_service = LangChainAIService()
+    return ai_service
+
+def get_route_optimizer():
+    """경로 최적화 Use Case 싱글톤 패턴"""
+    global route_optimizer
+    if route_optimizer is None:
+        route_optimizer = OptimizeRouteUseCase(get_ai_service())
+    return route_optimizer
+
+@app.route('/optimize-route', methods=['POST'])
+def optimize_route():
+    """TMS 배차 최적화 API 엔드포인트"""
+    try:
+        # 1. 요청 데이터 가져오기
+        request_data = app.current_request.json_body
+        
+        # 2. 파라미터 검증
+        tms_request = validate_tms_request(request_data)
+        
+        # 3. 배차 최적화 실행
+        optimizer = get_route_optimizer()
+        result = optimizer.execute(tms_request)
+        
+        # 4. 성공 응답
+        return {
+            'status': 'success',
+            'data': result.to_dict()
+        }
+        
+    except ValidationError as e:
+        logger.error(f"Validation error: {e}")
+        return Response(
+            body={'error': f'Invalid parameters: {str(e)}'},
+            status_code=400,
+            headers={'Content-Type': 'application/json'}
+        )
+    except AIServiceError as e:
+        logger.error(f"AI service error: {e}")
+        return Response(
+            body={'error': f'AI service error: {str(e)}'},
+            status_code=500,
+            headers={'Content-Type': 'application/json'}
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return Response(
+            body={'error': 'Internal server error'},
+            status_code=500,
+            headers={'Content-Type': 'application/json'}
+        )
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """헬스 체크 엔드포인트"""
+    return {'status': 'healthy', 'service': 'tms-router-ai'}
+
+@app.route('/feedback', methods=['POST'])
+def submit_feedback():
+    """AI 배차 결과에 대한 피드백 제출"""
+    try:
+        feedback_data = app.current_request.json_body
+        # 피드백 처리 로직
+        return {'status': 'feedback_received'}
+    except Exception as e:
+        logger.error(f"Feedback error: {e}")
+        return Response(
+            body={'error': 'Failed to process feedback'},
+            status_code=500
+        )
+```
+
+## 🔧 Chalice 설정 및 배포
+
+### .chalice/config.json
+```json
+{
+  "version": "2.0",
+  "app_name": "tms-router-ai",
+  "stages": {
+    "dev": {
+      "api_gateway_stage": "api",
+      "environment_variables": {
+        "LOG_LEVEL": "DEBUG"
+      },
+      "lambda_memory_size": 1024,
+      "lambda_timeout": 30
+    },
+    "prod": {
+      "api_gateway_stage": "v1",
+      "environment_variables": {
+        "LOG_LEVEL": "INFO"
+      },
+      "lambda_memory_size": 2048,
+      "lambda_timeout": 45,
+      "tags": {
+        "Environment": "Production",
+        "Service": "TMS-Router-AI"
+      }
+    }
+  }
+}
+```
+
+### requirements.txt
+```txt
+chalice>=1.29.0
+langchain>=0.1.0
+langchain-openai>=0.1.0
+langgraph>=0.1.0
+pydantic>=2.0.0
+boto3>=1.26.0
+tenacity>=8.2.0
+```
+
+## 📝 API 요청/응답 스키마
+
+### 배차 최적화 요청
+```json
+{
+  "scenario_type": "vrp",
+  "vehicles": [
+    {
+      "vehicle_id": "V001",
+      "capacity": 5.0,
+      "current_location": {"lat": 37.5665, "lng": 126.9780},
+      "status": "AVAILABLE"
+    }
+  ],
+  "orders": [
+    {
+      "order_id": "O001",
+      "pickup_location": {"lat": 37.5547, "lng": 126.9706},
+      "delivery_location": {"lat": 37.5172, "lng": 127.0473},
+      "weight": 2.5,
+      "priority": "HIGH",
+      "time_window": {
+        "start": "2024-01-15T09:00:00Z",
+        "end": "2024-01-15T17:00:00Z"
+      }
+    }
+  ],
+  "constraints": {
+    "max_working_hours": 8,
+    "fuel_limit_km": 400
+  },
+  "conversation_id": "conv_123",
+  "feedback": "이전 경로가 너무 복잡했습니다"
+}
+```
+
+### 배차 최적화 응답
+```json
+{
+  "request_id": "req_456",
+  "routes": [
+    {
+      "vehicle_id": "V001",
+      "orders": ["O001", "O002"],
+      "waypoints": [
+        {"lat": 37.5665, "lng": 126.9780, "type": "start"},
+        {"lat": 37.5547, "lng": 126.9706, "type": "pickup", "order_id": "O001"},
+        {"lat": 37.5172, "lng": 127.0473, "type": "delivery", "order_id": "O001"}
+      ],
+      "estimated_distance_km": 25.3,
+      "estimated_duration_minutes": 45,
+      "estimated_cost": 15000
+    }
+  ],
+  "ai_reasoning": "효율성을 위해 지리적으로 가까운 주문들을 그룹화했습니다...",
+  "confidence_score": 0.92,
+  "conversation_id": "conv_123"
+}
+```
+
+## 🧪 로컬 개발 및 테스트
+
+### 로컬 서버 실행
+
+#### Docker Compose 방식 (권장)
+```bash
+# 전체 스택 (Redis + App) 실행
+docker-compose up
+
+# Redis만 실행
+docker-compose up -d redis
+
+# Redis 관리 도구 실행
+docker-compose --profile tools up redis-commander
+```
+
+#### 직접 실행 방식
+```bash
+# 개발 환경 설정
+pip install -r requirements.txt
+
+# Redis 시작 (Docker)
+docker-compose up -d redis
+
+# 환경 변수 설정
+export REDIS_HOST=localhost
+
+# 로컬 서버 시작 (http://localhost:8000)
+chalice local
+
+# 특정 포트로 실행
+chalice local --port 8080
+```
+
+### 로컬 테스트 스크립트
+```python
+# tests/test_local.py
+import requests
+import json
+
+def test_optimize_route_local():
+    """로컬 API 테스트"""
+    url = "http://localhost:8000/optimize-route"
+    
+    test_data = {
+        "scenario_type": "vrp",
+        "vehicles": [
+            {
+                "vehicle_id": "V001",
+                "capacity": 5.0,
+                "current_location": {"lat": 37.5665, "lng": 126.9780},
+                "status": "AVAILABLE"
+            }
+        ],
+        "orders": [
+            {
+                "order_id": "O001",
+                "pickup_location": {"lat": 37.5547, "lng": 126.9706},
+                "delivery_location": {"lat": 37.5172, "lng": 127.0473},
+                "weight": 2.5,
+                "priority": "HIGH"
+            }
+        ]
+    }
+    
+    response = requests.post(url, json=test_data)
+    assert response.status_code == 200
+    result = response.json()
+    assert result['status'] == 'success'
+    print("✅ 로컬 테스트 성공!")
+
+if __name__ == "__main__":
+    test_optimize_route_local()
+```
+
+## 🚀 배포 명령어
+
+### 개발 환경 배포
+```bash
+# 개발 스테이지 배포
+chalice deploy --stage dev
+
+# 배포된 API URL 확인
+chalice url --stage dev
+```
+
+### 프로덕션 배포
+```bash
+# 프로덕션 배포
+chalice deploy --stage prod
+
+# 로그 확인
+chalice logs --stage prod
+
+# 배포 상태 확인
+chalice status --stage prod
+```
+
+## ⚡ 성능 최적화 규칙
+
+### Cold Start 최소화 (Chalice 방식)
+```python
+# app.py에서 글로벌 객체 관리
+import os
+from langchain.chat_models import ChatOpenAI
+
+# 컨테이너 수준에서 초기화
+_ai_client = None
+_memory_store = None
+
+def get_ai_client():
+    global _ai_client
+    if _ai_client is None:
+        _ai_client = ChatOpenAI(
+            api_key=os.environ['OPENAI_API_KEY'],
+            model="gpt-4"
+        )
+    return _ai_client
+
+def get_memory_store():
+    global _memory_store
+    if _memory_store is None:
+        _memory_store = initialize_memory_store()
+    return _memory_store
+```
+
+### Chalice 성능 설정
+- **Lambda 메모리**: dev: 1024MB, prod: 2048MB
+- **타임아웃**: dev: 30초, prod: 45초
+- **API Gateway 캐싱**: 프로덕션에서 활성화
+
+## 🔒 보안 및 환경 변수
+
+### 필수 환경 변수 (Chalice)
+```python
+import os
+
+# .chalice/config.json에서 관리되는 환경 변수
+OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
+DYNAMODB_TABLE = os.environ.get('MEMORY_TABLE_NAME', 'tms-conversations')
+LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO')
+
+# Chalice CORS 설정
+from chalice import CORSConfig
+cors_config = CORSConfig(
+    allow_origin='https://your-frontend-domain.com',
+    allow_headers=['Content-Type', 'X-Amz-Date', 'Authorization'],
+    max_age=600,
+    expose_headers=['X-Custom-Header'],
+    allow_credentials=True
+)
+
+@app.route('/optimize-route', methods=['POST'], cors=cors_config)
+def optimize_route():
+    # API 로직
+    pass
+```
+
+### Chalice 환경별 설정
+```bash
+# .env.dev (로컬 개발용)
+export OPENAI_API_KEY="your-dev-key"
+export LOG_LEVEL="DEBUG"
+
+# AWS Systems Manager Parameter Store (프로덕션)
+aws ssm put-parameter \
+  --name "/tms-router-ai/prod/openai-api-key" \
+  --value "your-prod-key" \
+  --type "SecureString"
+```
+
+### IAM 권한 (최소 권한 원칙)
+```yaml
+PolicyDocument:
+  Statement:
+    - Effect: Allow
+      Action:
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+      Resource: !GetAtt MemoryTable.Arn
+    - Effect: Allow  
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: "*"
+```
+
+## 📊 모니터링 및 로깅
+
+### 구조화된 로깅
+```python
+import logging
+import json
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def log_request(event, result):
+    """구조화된 로그 출력"""
+    log_data = {
+        'timestamp': datetime.utcnow().isoformat(),
+        'request_id': event.get('requestId'),
+        'scenario_type': event['body'].get('scenario_type'),
+        'vehicle_count': len(event['body'].get('vehicles', [])),
+        'order_count': len(event['body'].get('orders', [])),
+        'ai_confidence': result.get('confidence_score'),
+        'processing_time_ms': result.get('processing_time_ms')
+    }
+    logger.info(json.dumps(log_data))
+```
+
+### CloudWatch 메트릭
+- **응답 시간**: 평균, P95, P99
+- **에러율**: 4xx, 5xx 응답 비율
+- **AI 신뢰도**: 평균 confidence_score
+- **비용 효율성**: 토큰 사용량 대비 성과
+
+## 🔄 에러 처리 패턴
+
+### 재시도 로직
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10)
+)
+def call_openai_api(prompt, parameters):
+    """OpenAI API 호출 with 재시도"""
+    # API 호출 로직
+    pass
+```
+
+### 회로 차단기 패턴
+```python
+class AIServiceCircuitBreaker:
+    def __init__(self, failure_threshold=5, timeout=60):
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.timeout = timeout
+        self.last_failure_time = None
+        
+    def call(self, func, *args, **kwargs):
+        if self.is_open():
+            raise CircuitBreakerOpenError()
+        
+        try:
+            result = func(*args, **kwargs)
+            self.reset()
+            return result
+        except Exception as e:
+            self.record_failure()
+            raise e
+```
+description:
+globs:
+alwaysApply: false
+---
