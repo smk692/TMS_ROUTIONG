@@ -17,6 +17,11 @@
 ### 1. 패키지 설치
 
 ```bash
+cd tms-router-ai
+
+# 가상환경 설치
+python3 -m venv venv
+
 # 가상환경 활성화
 source venv/bin/activate
 

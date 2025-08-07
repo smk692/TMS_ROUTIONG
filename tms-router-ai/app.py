@@ -788,4 +788,167 @@ def clear_conversation(conversation_id: str):
 logger.info("TMS Router AI application started", extra={
     'environment': ENVIRONMENT,
     'log_level': LOG_LEVEL
-}) 
+})
+
+# 개발 모드에서 직접 실행 시 Flask 스타일 서버 시작
+if __name__ == '__main__':
+    from chalice.local import LocalGateway
+    from chalice.config import Config
+    import threading
+    
+    logger.info("Starting development server for debugging...")
+    
+    try:
+        # Chalice 로컬 게이트웨이 설정
+        config = Config.create(project_dir='.')
+        local_gateway = LocalGateway(app, config)
+        
+        # 개발 서버 시작
+        from werkzeug.serving import run_simple
+        
+        def create_wsgi_app():
+            def wsgi_app(environ, start_response):
+                return local_gateway.handle_request(environ, start_response)
+            return wsgi_app
+        
+        logger.info("Development server starting on http://localhost:8000")
+        logger.info("Press Ctrl+C to stop the server")
+        
+        # 디버깅 가능한 서버 실행
+        run_simple(
+            hostname='localhost',
+            port=8000,
+            application=create_wsgi_app(),
+            use_debugger=True,
+            use_reloader=False,  # 디버거와 충돌 방지
+            threaded=True
+        )
+        
+    except ImportError:
+        logger.warning("Werkzeug not available, falling back to basic server")
+        
+        # 기본적인 HTTP 서버 (브레이크포인트 테스트용)
+        import http.server
+        import socketserver
+        from urllib.parse import urlparse, parse_qs
+        import json
+        
+        class TmsDebugHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == '/health':
+                    # 브레이크포인트 테스트를 위해 health_check 함수 호출
+                    response = health_check()
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps(response).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def do_POST(self):
+                content_length = int(self.headers.get('Content-Length', 0))
+                post_data = self.rfile.read(content_length)
+                
+                # JSON 데이터 파싱
+                try:
+                    request_data = json.loads(post_data.decode('utf-8'))
+                except json.JSONDecodeError:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                
+                # 요청 경로에 따라 처리
+                if self.path == '/optimize-route':
+                    # Chalice 컨텍스트 모킹
+                    app.current_request = type('MockRequest', (), {
+                        'json_body': request_data,
+                        'headers': dict(self.headers)
+                    })()
+                    
+                    try:
+                        # optimize_route 함수 호출 (브레이크포인트 가능)
+                        response = optimize_route()
+                        
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+                        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                        self.end_headers()
+                        
+                        if isinstance(response, dict):
+                            self.wfile.write(json.dumps(response).encode())
+                        else:
+                            # Chalice Response 객체인 경우
+                            self.wfile.write(response.body.encode() if hasattr(response, 'body') else json.dumps(response).encode())
+                            
+                    except Exception as e:
+                        logger.error(f"Error in optimize_route: {e}")
+                        self.send_response(500)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        error_response = {'error': str(e), 'message': 'Internal server error'}
+                        self.wfile.write(json.dumps(error_response).encode())
+                
+                elif self.path == '/feedback':
+                    # Chalice 컨텍스트 모킹
+                    app.current_request = type('MockRequest', (), {
+                        'json_body': request_data,
+                        'headers': dict(self.headers)
+                    })()
+                    
+                    try:
+                        response = submit_feedback()
+                        
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.send_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+                        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                        self.end_headers()
+                        
+                        if isinstance(response, dict):
+                            self.wfile.write(json.dumps(response).encode())
+                        else:
+                            self.wfile.write(response.body.encode() if hasattr(response, 'body') else json.dumps(response).encode())
+                            
+                    except Exception as e:
+                        logger.error(f"Error in submit_feedback: {e}")
+                        self.send_response(500)
+                        self.send_header('Content-type', 'application/json')
+                        self.send_header('Access-Control-Allow-Origin', '*')
+                        self.end_headers()
+                        error_response = {'error': str(e), 'message': 'Internal server error'}
+                        self.wfile.write(json.dumps(error_response).encode())
+                        
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            
+            def do_OPTIONS(self):
+                # CORS preflight 요청 처리
+                self.send_response(200)
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'POST, GET, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                self.end_headers()
+                    
+            def log_message(self, format, *args):
+                # 로그 출력 방지
+                pass
+        
+        logger.info("Basic HTTP server starting on http://localhost:8000")
+        logger.info("Available endpoints: /health (GET), /optimize-route (POST), /feedback (POST)")
+        
+        with socketserver.TCPServer(("localhost", 8000), TmsDebugHandler) as httpd:
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:
+                logger.info("Server stopped by user")
+                
+    except Exception as e:
+        logger.error(f"Failed to start development server: {e}")
+        logger.info("Please use 'TMS Router AI - Chalice Local (venv)' debug configuration instead")
