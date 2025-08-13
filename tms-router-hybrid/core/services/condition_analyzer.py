@@ -20,40 +20,24 @@ class ConditionAnalyzer:
         weather_data = {}
         
         # 실제 날씨 API 사용
-        from ..external import WeatherClient, get_cache_manager
+        from ..external import WeatherClient
         
         weather_client = WeatherClient(
             api_key=self.config.get('weather_api_key')
         )
-        cache_manager = get_cache_manager()
         
         for region in regions:
             try:
-                # 캐시된 날씨 데이터 확인
-                cache_key = cache_manager.get_cache_key(
-                    'weather',
-                    region_id=region.id,
-                    coordinates=region.center_coordinates
-                )
+                # API 호출하여 실시간 날씨 데이터 수집
+                weather_api_data = weather_client.get_weather_data(region.center_coordinates)
                 
-                cached_weather = cache_manager.get('weather', cache_key)
-                
-                if cached_weather:
-                    weather_info = cached_weather
-                    self.logger.debug(f"캐시된 날씨 데이터 사용: {region.id}")
+                if weather_api_data:
+                    weather_info = self._convert_weather_api_to_dict(weather_api_data)
+                    self.logger.debug(f"실시간 날씨 데이터 수집: {region.id}")
                 else:
-                    # API 호출하여 실시간 날씨 데이터 수집
-                    weather_api_data = weather_client.get_weather_data(region.center_coordinates)
-                    
-                    if weather_api_data:
-                        weather_info = self._convert_weather_api_to_dict(weather_api_data)
-                        # 캐시에 저장 (30분)
-                        cache_manager.set('weather', cache_key, weather_info)
-                        self.logger.debug(f"실시간 날씨 데이터 수집: {region.id}")
-                    else:
-                        # API 실패 시 샘플 데이터 사용
-                        weather_info = self._get_sample_weather_data(region)
-                        self.logger.warning(f"날씨 API 실패, 샘플 데이터 사용: {region.id}")
+                    # API 실패 시 샘플 데이터 사용
+                    weather_info = self._get_sample_weather_data(region)
+                    self.logger.warning(f"날씨 API 실패, 샘플 데이터 사용: {region.id}")
                 
                 weather_data[region.id] = weather_info
                 
@@ -77,40 +61,24 @@ class ConditionAnalyzer:
         traffic_data = {}
         
         # 실제 교통 API 사용
-        from ..external import TrafficClient, get_cache_manager
+        from ..external import TrafficClient
         
         traffic_client = TrafficClient(
             api_key=self.config.get('traffic_api_key')
         )
-        cache_manager = get_cache_manager()
         
         for region in regions:
             try:
-                # 캐시된 교통 데이터 확인
-                cache_key = cache_manager.get_cache_key(
-                    'traffic', 
-                    region_id=region.id,
-                    coordinates=region.center_coordinates
-                )
+                # API 호출하여 실시간 교통 데이터 수집
+                traffic_api_data = traffic_client.get_traffic_data(region)
                 
-                cached_traffic = cache_manager.get('traffic', cache_key)
-                
-                if cached_traffic:
-                    traffic_info = cached_traffic
-                    self.logger.debug(f"캐시된 교통 데이터 사용: {region.id}")
+                if traffic_api_data:
+                    traffic_info = self._convert_traffic_api_to_dict(traffic_api_data)
+                    self.logger.debug(f"실시간 교통 데이터 수집: {region.id}")
                 else:
-                    # API 호출하여 실시간 교통 데이터 수집
-                    traffic_api_data = traffic_client.get_traffic_data(region)
-                    
-                    if traffic_api_data:
-                        traffic_info = self._convert_traffic_api_to_dict(traffic_api_data)
-                        # 캐시에 저장 (15분)
-                        cache_manager.set('traffic', cache_key, traffic_info)
-                        self.logger.debug(f"실시간 교통 데이터 수집: {region.id}")
-                    else:
-                        # API 실패 시 샘플 데이터 사용
-                        traffic_info = self._get_sample_traffic_data(region)
-                        self.logger.warning(f"교통 API 실패, 샘플 데이터 사용: {region.id}")
+                    # API 실패 시 샘플 데이터 사용
+                    traffic_info = self._get_sample_traffic_data(region)
+                    self.logger.warning(f"교통 API 실패, 샘플 데이터 사용: {region.id}")
                 
                 traffic_data[region.id] = traffic_info
                 

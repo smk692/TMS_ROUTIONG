@@ -239,11 +239,24 @@ def execute_dispatch(api_service, center_id, algorithm, dry_run):
         
         # 결과 표시
         if result.is_successful():
-            st.success(f"✅ 실제 TMS 배차가 성공적으로 완료되었습니다! (실행 시간: {format_time(result.execution_time)})")
-            st.info("💾 배차 결과가 데이터베이스에 저장되었습니다.")
-            display_dispatch_result(result)
+            # 경고가 있는 경우 (차량 부족 등) 
+            if hasattr(result, 'warnings') and result.warnings:
+                st.warning(f"⚠️ 차량 부족으로 배차를 수행할 수 없습니다")
+                for warning in result.warnings:
+                    st.warning(f"• {warning}")
+                st.info("💡 해결 방법:")
+                st.info("- 차량을 추가 등록하세요")
+                st.info("- 기존 차량의 상태를 'ACTIVE'로 변경하세요") 
+                st.info("- 차량의 'auto_dispatch'를 활성화하세요")
+                st.info("- 차량 유형이 'TOP_CAR' 또는 'CARGO'인지 확인하세요")
+            else:
+                st.success(f"✅ 실제 TMS 배차가 성공적으로 완료되었습니다! (실행 시간: {format_time(result.execution_time)})")
+                st.info("💾 배차 결과가 데이터베이스에 저장되었습니다.")
+                display_dispatch_result(result)
         else:
-            st.error(f"❌ 배차 실행 중 오류가 발생했습니다: {result.error_message}")
+            # 실제 오류 상황
+            error_msg = result.error_message or "알 수 없는 오류"
+            st.error(f"❌ 배차 실행 중 오류가 발생했습니다: {error_msg}")
             
     except Exception as e:
         progress_bar.empty()

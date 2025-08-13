@@ -10,11 +10,9 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from geopy.distance import geodesic
 import time
-from diskcache import Cache
 import json
 
 from ...models import Coordinates
-from ...external import get_cache_manager
 
 
 @dataclass
@@ -41,9 +39,7 @@ class DistanceMatrixCalculator:
         # API 우선순위 
         self.api_priority = config.get('api_priority', ['openroute', 'here', 'kakao', 'haversine'])
         
-        # 캐시 설정
-        self.cache = get_cache_manager()
-        self.cache_ttl = config.get('distance_cache_ttl', 24 * 3600)  # 24시간
+        # 캐시 시스템 제거됨
         
         # 요청 제한 설정
         self.max_locations_per_request = config.get('max_locations_per_request', 50)
@@ -69,8 +65,7 @@ class DistanceMatrixCalculator:
             ) as session:
                 self._session = session
                 
-                # 캐시된 거리 먼저 확인
-                cache_hits = 0
+                # 모든 거리 계산 필요
                 pending_pairs = []
                 
                 for i in range(n_locations):
@@ -78,16 +73,9 @@ class DistanceMatrixCalculator:
                         if i == j:
                             distance_matrix[i][j] = 0.0
                             continue
-                            
-                        # 캐시 확인
-                        cached_distance = self._get_cached_distance(locations[i], locations[j])
-                        if cached_distance is not None:
-                            distance_matrix[i][j] = cached_distance
-                            cache_hits += 1
-                        else:
-                            pending_pairs.append((i, j))
+                        pending_pairs.append((i, j))
                 
-                self.logger.info(f"캐시 히트: {cache_hits}개, 계산 필요: {len(pending_pairs)}개")
+                self.logger.info(f"계산 필요: {len(pending_pairs)}개")
                 
                 # 남은 거리들 계산
                 if pending_pairs:
@@ -122,11 +110,6 @@ class DistanceMatrixCalculator:
                         )
                         distance_matrix[src_idx][dst_idx] = distance
                         
-                        # 캐시 저장
-                        self._cache_distance(
-                            locations[src_idx], locations[dst_idx], 
-                            distance, 'haversine'
-                        )
                     batch_pairs = []  # 모든 계산 완료
                 else:
                     # 다른 API들 시도 (기존 로직)
@@ -224,11 +207,6 @@ class DistanceMatrixCalculator:
                         
                         distance_matrix[src_idx][dst_idx] = distance_km
                         
-                        # 캐시 저장
-                        self._cache_distance(
-                            locations[src_idx], locations[dst_idx], 
-                            distance_km, 'openroute'
-                        )
                         
                         success_pairs.append((src_idx, dst_idx))
                 else:
@@ -268,10 +246,7 @@ class DistanceMatrixCalculator:
                             
                             distance_matrix[src_idx][dst_idx] = distance_km
                             
-                            # 캐시 저장
-                            self._cache_distance(src_coord, dst_coord, distance_km, 'openroute')
-                            success_pairs.append((src_idx, dst_idx))
-                            
+                                
                 await asyncio.sleep(0.1)  # 요청 간 지연
                 
             except Exception as e:
@@ -318,8 +293,6 @@ class DistanceMatrixCalculator:
                     distance = self._calculate_haversine_distance(locations[i], locations[j])
                     matrix[i][j] = distance
                     
-                    # 캐시 저장
-                    self._cache_distance(locations[i], locations[j], distance, 'haversine')
         
         return matrix
     
@@ -336,53 +309,6 @@ class DistanceMatrixCalculator:
         road_factor = 1.4
         return straight_distance * road_factor
     
-    def _get_cached_distance(self, coord1: Coordinates, coord2: Coordinates) -> Optional[float]:
-        """캐시된 거리 조회"""
-        
-        try:
-            cache_key = self._generate_cache_key(coord1, coord2)
-            cached_result = self.cache.get(cache_key, 'distance')
-            
-            if cached_result is not None:
-                return cached_result.get('distance_km')
-                
-        except Exception as e:
-            self.logger.debug(f"캐시 조회 오류: {str(e)}")
-        
-        return None
-    
-    def _cache_distance(self, coord1: Coordinates, coord2: Coordinates, 
-                       distance_km: float, api_source: str):
-        """거리 결과 캐시 저장"""
-        
-        try:
-            cache_key = self._generate_cache_key(coord1, coord2)
-            cache_data = {
-                'distance_km': distance_km,
-                'api_source': api_source,
-                'timestamp': time.time()
-            }
-            
-            self.cache.set(cache_key, cache_data, 'distance', expire=self.cache_ttl)
-            
-        except Exception as e:
-            self.logger.debug(f"캐시 저장 오류: {str(e)}")
-    
-    def _generate_cache_key(self, coord1: Coordinates, coord2: Coordinates) -> str:
-        """캐시 키 생성"""
-        
-        # 좌표를 정렬하여 방향에 무관하게 동일한 키 생성
-        coords = sorted([
-            (coord1.latitude, coord1.longitude),
-            (coord2.latitude, coord2.longitude)
-        ])
-        
-        # 좌표를 4자리 소수점으로 반올림하여 근사치 캐싱
-        rounded_coords = [
-            (round(lat, 4), round(lng, 4)) for lat, lng in coords
-        ]
-        
-        return f"distance_{rounded_coords[0]}_{rounded_coords[1]}"
     
     def calculate_time_matrix(self, distance_matrix: np.ndarray, avg_speed_kmh: float = 25.0) -> np.ndarray:
         """거리 행렬을 기반으로 시간 행렬 계산"""

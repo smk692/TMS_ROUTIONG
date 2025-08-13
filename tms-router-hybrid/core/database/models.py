@@ -60,12 +60,6 @@ class DispatchStatusEnum(PyEnum):
     ROLLBACK = "rollback"
 
 
-class CacheTypeEnum(PyEnum):
-    """캐시 유형"""
-    WEATHER = "weather"
-    TRAFFIC = "traffic"
-    ROUTING = "routing"
-
 
 class TransactionOperationEnum(PyEnum):
     """트랜잭션 작업 유형"""
@@ -290,22 +284,6 @@ class OrderAssignment(Base):
     )
 
 
-class APICache(Base):
-    """API 응답 캐시 모델"""
-    __tablename__ = "api_cache"
-    
-    cache_key: Mapped[str] = mapped_column(String(255), primary_key=True)
-    cache_type: Mapped[CacheTypeEnum] = mapped_column(ENUM(CacheTypeEnum), nullable=False)
-    data: Mapped[dict] = mapped_column(JSON, nullable=False)
-    source: Mapped[str] = mapped_column(String(100), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    
-    # 인덱스
-    __table_args__ = (
-        Index('idx_api_cache_type', 'cache_type'),
-        Index('idx_api_cache_expires', 'expires_at'),
-    )
 
 
 class SystemSetting(Base):

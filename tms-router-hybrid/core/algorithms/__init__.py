@@ -1,46 +1,38 @@
 """
-TMS Router Hybrid - 알고리즘 패키지
+TMS Router Hybrid - 알고리즘 패키지 (OR-Tools VRP 전용)
 """
 
 # 기본 클래스
 from .base_algorithm import BaseAlgorithm, AlgorithmResult, AlgorithmConfig, AlgorithmError
 
-# 알고리즘 구현체들
-from .nearest_neighbor import NearestNeighborAlgorithm, RandomNearestNeighborAlgorithm
-from .genetic_algorithm import GeneticAlgorithm, GeneticAlgorithmConfig
-from .simulated_annealing import SimulatedAnnealingAlgorithm, SimulatedAnnealingConfig
-from .hybrid_vrp_tsp import HybridVRPTSPAlgorithm, HybridVRPTSPConfig
-from .simple_distance_based import SimpleDistanceBasedAlgorithm, FastestDistanceAlgorithm, SimpleConfig
+# OR-Tools VRP 알고리즘 (유일한 알고리즘)
 from .ortools_vrp_algorithm import ORToolsVRPAlgorithm, ORToolsVRPConfig
 
-# 알고리즘 선택 및 팩토리
-from .algorithm_selector import AlgorithmSelector, AlgorithmType, SelectionStrategy
-from .algorithm_factory import AlgorithmFactory, get_algorithm_factory
+# 간소화된 팩토리
+from .algorithm_factory_simplified import SimplifiedAlgorithmFactory
 
 __all__ = [
     # 기본 클래스
     'BaseAlgorithm', 'AlgorithmResult', 'AlgorithmConfig', 'AlgorithmError',
     
-    # 알고리즘 구현체들
-    'NearestNeighborAlgorithm', 'RandomNearestNeighborAlgorithm',
-    'GeneticAlgorithm', 'GeneticAlgorithmConfig',
-    'SimulatedAnnealingAlgorithm', 'SimulatedAnnealingConfig',
-    'HybridVRPTSPAlgorithm', 'HybridVRPTSPConfig',
-    'SimpleDistanceBasedAlgorithm', 'FastestDistanceAlgorithm', 'SimpleConfig',
+    # OR-Tools VRP 알고리즘
     'ORToolsVRPAlgorithm', 'ORToolsVRPConfig',
     
-    # 선택 및 팩토리
-    'AlgorithmSelector', 'AlgorithmType', 'SelectionStrategy',
-    'AlgorithmFactory', 'get_algorithm_factory'
+    # 간소화된 팩토리
+    'SimplifiedAlgorithmFactory'
 ]
 
-# 편의 함수들
-def create_algorithm(algorithm_type: str, config: dict = None) -> BaseAlgorithm:
-    """편의 함수: 알고리즘 생성"""
-    factory = get_algorithm_factory()
-    return factory.create_algorithm(algorithm_type, config)
+# 편의 함수들 (OR-Tools VRP 전용)
+def create_algorithm(orders, vehicles, regions=None, conditions=None) -> BaseAlgorithm:
+    """편의 함수: OR-Tools VRP 알고리즘 생성"""
+    factory = SimplifiedAlgorithmFactory()
+    return factory.create_algorithm(orders, vehicles, regions or [], conditions)
 
-def get_optimal_algorithm(orders, vehicles, regions, conditions=None) -> BaseAlgorithm:
-    """편의 함수: 최적 알고리즘 선택"""
-    factory = get_algorithm_factory()
-    return factory.create_optimal_algorithm(orders, vehicles, regions, conditions)
+def get_optimal_algorithm(orders, vehicles, regions=None, conditions=None) -> BaseAlgorithm:
+    """편의 함수: OR-Tools VRP 알고리즘 선택 (항상 OR-Tools VRP 반환)"""
+    return create_algorithm(orders, vehicles, regions, conditions)
+
+# 하위 호환성을 위한 팩토리 함수
+def get_algorithm_factory():
+    """하위 호환성: 간소화된 팩토리 반환"""
+    return SimplifiedAlgorithmFactory()

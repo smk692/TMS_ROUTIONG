@@ -124,7 +124,12 @@ class DispatchOrchestrator:
         if not orders:
             raise ValueError("배차할 주문이 없습니다")
         if not vehicles:
-            raise ValueError("사용 가능한 차량이 없습니다")
+            # 차량 부족 상황을 더 명확히 안내
+            excluded_vehicles = self.data_collector.get_excluded_vehicles(center_id)
+            if excluded_vehicles:
+                raise ValueError(f"자동 배차 가능한 차량이 없습니다. (수동 배차 대상 차량 {len(excluded_vehicles)}대 있음)")
+            else:
+                raise ValueError("센터에 등록된 차량이 없거나 모든 차량이 비활성 상태입니다")
         if not regions:
             raise ValueError("권역 정보가 없습니다")
         
@@ -202,32 +207,27 @@ class DispatchOrchestrator:
         self.logger.info("OR-Tools VRP 최적화 알고리즘 실행 시작")
         
         try:
-            # 알고리즘 팩토리에서 최적 알고리즘 선택
-            from ..algorithms import get_algorithm_factory
+            # 간소화된 알고리즘 팩토리 사용 (OR-Tools VRP 전용)
+            from ..algorithms.algorithm_factory_simplified import SimplifiedAlgorithmFactory
             
-            # 외부 API 키들 전달
-            api_conditions = {
-                'openroute_api_key': self.config.get('weather_api_key', 'demo_key'),  # 임시로 weather_api_key 사용
-                'here_api_key': self.config.get('traffic_api_key', 'demo_key'),      # 임시로 traffic_api_key 사용
-                'kakao_api_key': 'demo_key',
-                'emergency': conditions.get('emergency', False),
-                'time_limit_seconds': 120,  # 2분 제한
-                'verbose': False,
+            # 조건 설정
+            opt_conditions = {
+                'time_limit_seconds': 600,  # 10분 제한
                 **conditions
             }
             
-            factory = get_algorithm_factory()
+            factory = SimplifiedAlgorithmFactory(self.config)
             
             # 지역(regions) 정보가 없으면 빈 리스트로 처리
             regions = []
             
-            # 최적 알고리즘 선택 및 실행
-            algorithm = factory.create_optimal_algorithm(orders, vehicles, regions, api_conditions)
+            # OR-Tools VRP 알고리즘 생성 및 실행
+            algorithm = factory.create_algorithm(orders, vehicles, regions, opt_conditions)
             
             self.logger.info(f"선택된 알고리즘: {algorithm.algorithm_name}")
             
             # 최적화 실행
-            result = algorithm.optimize(orders, vehicles, regions, api_conditions)
+            result = algorithm.optimize(orders, vehicles, regions, opt_conditions)
             
             if result.assignments:
                 assigned_orders_count = result.convergence_info.get('assigned_orders', 0) if result.convergence_info else 0
@@ -348,7 +348,194 @@ class DispatchOrchestrator:
         
         return result
     
+    def execute_vehicle_redispatch(self, vehicle_id: str) -> DispatchResult:
+        """차량 주문 재배차 실행"""
+        batch_id = self._generate_redispatch_batch_id()
+        start_time = time.time()
+        
+        self.logger.info(f"차량 재배차 시작: {batch_id} (차량: {vehicle_id})")
+        
+        try:
+            with self.transaction_manager.dispatch_transaction(batch_id, None) as tx_context:
+                # 1단계: 차량 정보 및 배정된 주문 조회
+                vehicle_data = self._collect_vehicle_assigned_data(vehicle_id)
+                
+                if not vehicle_data['vehicle']:
+                    raise ValueError(f"차량 '{vehicle_id}'를 찾을 수 없습니다")
+                
+                if not vehicle_data['assigned_orders']:
+                    self.logger.info(f"차량 '{vehicle_id}'에 배정된 주문이 없습니다")
+                    return DispatchResult(
+                        batch_id=batch_id,
+                        timestamp=datetime.now(),
+                        status=DispatchStatus.SUCCESS,
+                        error_message="재배차할 주문이 없습니다"
+                    )
+                
+                # 2단계: 외부 조건 분석 (해당 권역만)
+                conditions = self._analyze_conditions([vehicle_data['region']])
+                
+                # 3단계: 차량 용량 재계산
+                capacities = self._calculate_capacities(
+                    [vehicle_data['vehicle']], 
+                    [vehicle_data['region']],
+                    conditions['weather'],
+                    conditions['traffic']
+                )
+                
+                # 4단계: 재최적화 실행 (기존 배정 주문들만)
+                assignments = self._execute_vehicle_reoptimization(
+                    vehicle_data['assigned_orders'],
+                    vehicle_data['vehicle'],
+                    capacities,
+                    conditions
+                )
+                
+                # 5단계: 배정 정보 업데이트
+                if assignments:
+                    success = tx_context.update_order_assignments(assignments[0])
+                    if not success:
+                        raise ValueError("주문 재배정 처리 실패")
+                
+                # 6단계: 재배차 완료 처리
+                execution_time = time.time() - start_time
+                algorithm_used = "재배차 최적화"
+                
+                success = tx_context.complete_dispatch(
+                    algorithm_used=algorithm_used,
+                    execution_time=execution_time,
+                    weather_conditions=conditions.get('weather'),
+                    traffic_conditions=conditions.get('traffic')
+                )
+                
+                if not success:
+                    raise ValueError("재배차 완료 처리 실패")
+                
+                # 7단계: 결과 생성
+                result = self._create_redispatch_result(
+                    batch_id=batch_id,
+                    assignments=assignments,
+                    vehicle_id=vehicle_id,
+                    conditions=conditions,
+                    execution_time=execution_time
+                )
+                
+                self.logger.info(f"차량 재배차 완료: {result.get_summary_text()}")
+                return result
+                
+        except Exception as e:
+            self.logger.error(f"차량 재배차 실행 오류: {str(e)}")
+            return DispatchResult(
+                batch_id=batch_id,
+                timestamp=datetime.now(),
+                status=DispatchStatus.FAILED,
+                error_message=str(e)
+            )
+    
+    def _collect_vehicle_assigned_data(self, vehicle_id: str) -> Dict:
+        """차량의 배정된 주문 데이터 수집"""
+        self.logger.info(f"차량 '{vehicle_id}' 배정 데이터 수집 시작")
+        
+        # 배정된 주문들 조회 (기존 DataCollector 메서드 활용)
+        assigned_orders = self.data_collector.get_pending_orders(region_id=None)
+        assigned_orders = [o for o in assigned_orders if o.assigned_vehicle_id == vehicle_id]
+        
+        # 차량 정보 조회 (기존 메서드 활용) 
+        vehicles = self.data_collector.get_available_vehicles()
+        vehicle = next((v for v in vehicles if v.id == vehicle_id), None)
+        
+        if not vehicle:
+            raise ValueError(f"차량 '{vehicle_id}'를 찾을 수 없습니다")
+        
+        # 권역 정보 조회
+        regions = self.data_collector.get_regions()
+        region = next((r for r in regions if r.id == vehicle.region_id), None)
+        
+        self.logger.info(f"차량 '{vehicle_id}' 데이터 수집 완료: {len(assigned_orders)}개 배정 주문")
+        
+        return {
+            'vehicle': vehicle,
+            'assigned_orders': assigned_orders, 
+            'region': region
+        }
+    
+    def _execute_vehicle_reoptimization(self, assigned_orders: List[Order], vehicle: Vehicle,
+                                      capacities: Dict, conditions: Dict) -> List[VehicleAssignment]:
+        """차량 주문 재최적화 실행"""
+        self.logger.info("차량 주문 재최적화 시작")
+        
+        if not assigned_orders:
+            return []
+        
+        try:
+            # 간단한 재최적화 (경로 순서 재계산)
+            from ..algorithms.algorithm_factory_simplified import SimplifiedAlgorithmFactory
+            
+            factory = SimplifiedAlgorithmFactory(self.config)
+            algorithm = factory.create_algorithm(assigned_orders, [vehicle], [], conditions)
+            
+            result = algorithm.optimize(assigned_orders, [vehicle], [], conditions)
+            
+            if result.assignments:
+                self.logger.info(f"차량 재최적화 완료: {len(result.assignments)}개 배정")
+                return result.assignments
+            else:
+                self.logger.warning("재최적화 결과 없음, 기존 순서 유지")
+                return self._create_fallback_assignment(assigned_orders, vehicle)
+                
+        except Exception as e:
+            self.logger.error(f"차량 재최적화 오류: {str(e)}")
+            return self._create_fallback_assignment(assigned_orders, vehicle)
+    
+    def _create_fallback_assignment(self, orders: List[Order], vehicle: Vehicle) -> List[VehicleAssignment]:
+        """폴백: 기존 순서 유지하면서 시간만 재계산"""
+        estimated_distance = len(orders) * 2.0
+        travel_time = int(estimated_distance / 25 * 60)
+        delivery_time = len(orders) * 8
+        setup_time = 5
+        estimated_time = travel_time + delivery_time + setup_time
+        
+        assignment = VehicleAssignment(
+            vehicle_id=vehicle.id,
+            driver_name=vehicle.driver_name,
+            vehicle_type=vehicle.vehicle_type.value,
+            region_name=f"권역_{vehicle.region_id}",
+            assigned_orders=[o.id for o in orders],
+            estimated_distance_km=estimated_distance,
+            estimated_time_minutes=estimated_time,
+            capacity_utilization=len(orders) / vehicle.max_capacity
+        )
+        
+        return [assignment]
+    
+    def _create_redispatch_result(self, batch_id: str, assignments: List[VehicleAssignment],
+                                 vehicle_id: str, conditions: Dict, execution_time: float) -> DispatchResult:
+        """재배차 결과 생성"""
+        total_assigned = sum(len(a.assigned_orders) for a in assignments)
+        
+        result = DispatchResult(
+            batch_id=batch_id,
+            timestamp=datetime.now(),
+            status=DispatchStatus.SUCCESS if assignments else DispatchStatus.FAILED,
+            vehicle_assignments=assignments,
+            external_conditions=conditions
+        )
+        
+        if result.metrics:
+            result.metrics.execution_time_seconds = execution_time
+            result.metrics.algorithm_used = "재배차 최적화"
+            result.metrics.assigned_orders = total_assigned
+        
+        result.add_warning(f"차량 '{vehicle_id}' 주문 재배차 완료")
+        
+        return result
+    
     def _generate_batch_id(self) -> str:
         """배치 ID 생성"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"DISPATCH_{timestamp}"
+    
+    def _generate_redispatch_batch_id(self) -> str:
+        """재배차 배치 ID 생성"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"REDISPATCH_{timestamp}"

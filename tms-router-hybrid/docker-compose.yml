@@ -15,9 +15,9 @@ services:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./core/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-      - ./core/database/create_test_data_500.sql:/docker-entrypoint-initdb.d/02-create_test_data.sql
-      - ./core/database/03-fix_enum_data.sql:/docker-entrypoint-initdb.d/03-fix_enum_data.sql
+      - ./core/database/scripts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./core/database/scripts/create_test_data_500.sql:/docker-entrypoint-initdb.d/02-create_test_data.sql
+      - ./core/database/scripts/03-fix_enum_data.sql:/docker-entrypoint-initdb.d/03-fix_enum_data.sql
       - ./logs/mysql:/var/log/mysql
     networks:
       - tms_network
@@ -251,7 +251,7 @@ networks:
 #    - VehicleStatus: ACTIVE, INACTIVE, MAINTENANCE, IN_DELIVERY (영문 대문자)
 #    - OrderStatus: pending, assigned, in_progress, completed, cancelled (영문 소문자)
 #
-# 3. 초기화 스크립트 순서:
+# 3. 초기화 스크립트 순서 (core/database/scripts/):
 #    - 01-schema.sql (테이블 스키마 생성)
 #    - 02-create_test_data_500.sql (각 센터당 500개 주문, 총 3,000개 테스트 데이터)
 #    - 03-fix_enum_data.sql (enum 값 표준화 및 검증)
