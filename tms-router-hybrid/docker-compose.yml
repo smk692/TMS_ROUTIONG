@@ -1,0 +1,261 @@
+version: '3.8'
+
+services:
+  # MySQL 8.0 데이터베이스
+  mysql:
+    image: mysql:8.0
+    container_name: tms_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-tms_root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-tms_db}
+      MYSQL_USER: ${MYSQL_USER:-tms_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-tms_password}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./core/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./core/database/create_test_data_500.sql:/docker-entrypoint-initdb.d/02-create_test_data.sql
+      - ./core/database/03-fix_enum_data.sql:/docker-entrypoint-initdb.d/03-fix_enum_data.sql
+      - ./logs/mysql:/var/log/mysql
+    networks:
+      - tms_network
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --character-set-client-handshake=FALSE
+      --character-set-filesystem=utf8mb4
+      --init-connect='SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci'
+      --sql_mode=STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,ERROR_FOR_DIVISION_BY_ZERO
+      --innodb-buffer-pool-size=512M
+      --max_connections=200
+      --innodb-log-file-size=256M
+      --innodb-flush-log-at-trx-commit=2
+      --innodb-file-per-table=1
+      --slow_query_log=1
+      --slow_query_log_file=/var/log/mysql/mysql-slow.log
+      --long_query_time=2
+      --log-error=/var/log/mysql/mysql-error.log
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-tms_user}", "-p${MYSQL_PASSWORD:-tms_password}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # phpMyAdmin 웹 관리 도구
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:5.2
+    container_name: tms_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: ${MYSQL_USER:-tms_user}
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-tms_password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-tms_root_password}
+      UPLOAD_LIMIT: 200M
+      MEMORY_LIMIT: 512M
+    ports:
+      - "${PHPMYADMIN_PORT:-8080}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - tms_network
+    profiles:
+      - dev
+      - debug
+
+  # Redis (캐시용)
+  redis:
+    image: redis:7.2-alpine
+    container_name: tms_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+      - ./logs/redis:/var/log/redis
+    networks:
+      - tms_network
+    command: >
+      redis-server 
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --save 300 100
+      --save 3600 1
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  tms_network:
+    driver: bridge
+
+# =============================================================================
+# TMS Router Hybrid - Docker Compose 사용 가이드
+# =============================================================================
+#
+# 🚀 기본 실행 명령어:
+#
+# 1. 전체 서비스 시작:
+#    docker-compose up -d
+#
+# 2. 개발 환경 (phpMyAdmin 포함):
+#    docker-compose --profile dev up -d
+#
+# 3. 디버그 환경 (모든 서비스):
+#    docker-compose --profile debug up -d
+#
+# 4. 개별 서비스 시작:
+#    docker-compose up -d mysql redis
+#
+# 5. TMS 애플리케이션만 실행:
+#    docker-compose up tms-app
+#
+# 🔍 모니터링 및 로그:
+#
+# 6. 전체 로그 확인:
+#    docker-compose logs -f
+#
+# 7. 특정 서비스 로그:
+#    docker-compose logs -f tms-app
+#    docker-compose logs -f mysql
+#
+# 8. 서비스 상태 확인:
+#    docker-compose ps
+#
+# 🔧 관리 명령어:
+#
+# 9. 컨테이너 중지:
+#    docker-compose down
+#
+# 10. 데이터까지 완전 삭제:
+#     docker-compose down -v
+#
+# 11. 스키마 재생성:
+#     docker-compose down -v && docker-compose up -d
+#
+# 12. 이미지 새로 빌드:
+#     docker-compose build --no-cache tms-app
+#
+# =============================================================================
+# 🌐 접근 정보
+# =============================================================================
+#
+# TMS 애플리케이션:   http://localhost:8000
+# phpMyAdmin:         http://localhost:8080 (dev/debug profile)
+# MySQL 직접 접속:    localhost:3306
+# Redis:              localhost:6379
+#
+# 데이터베이스 접속 정보:
+# - 호스트: localhost
+# - 포트: 3306
+# - 사용자: tms_user
+# - 비밀번호: tms_password
+# - 데이터베이스: tms_db
+#
+# =============================================================================
+# 🔒 환경별 설정
+# =============================================================================
+#
+# 개발 환경:
+# - TMS App: 8000 포트
+# - MySQL: 3306 포트 (외부 접근 가능)
+# - phpMyAdmin: 8080 포트 (dev profile)
+# - Redis: 6379 포트
+# - 모든 로그 파일 마운트
+#
+# 프로덕션 환경:
+# - phpMyAdmin 비활성화 (profile 미사용)
+# - 강력한 패스워드 사용 (.env 파일)
+# - MySQL 포트 외부 노출 최소화
+# - 로그 로테이션 및 백업 전략 필요
+#
+# =============================================================================
+# 📝 환경변수 (.env 파일)
+# =============================================================================
+#
+# .env 파일을 생성하여 다음 변수들을 설정할 수 있습니다:
+#
+# # 데이터베이스 설정
+# MYSQL_ROOT_PASSWORD=your_secure_root_password
+# MYSQL_DATABASE=tms_production
+# MYSQL_USER=production_user
+# MYSQL_PASSWORD=your_secure_password
+# MYSQL_PORT=3306
+#
+# # 애플리케이션 설정
+# TMS_PORT=8000
+# LOG_LEVEL=INFO
+#
+# # 개발 도구
+# PHPMYADMIN_PORT=8080
+# REDIS_PORT=6379
+#
+# # 외부 API 키 (옵션)
+# OPENWEATHER_API_KEY=your_api_key
+# HERE_API_KEY=your_api_key
+#
+# =============================================================================
+# 📊 성능 최적화 설정
+# =============================================================================
+#
+# MySQL:
+# - InnoDB 버퍼 풀: 512MB
+# - 최대 연결: 200개
+# - 슬로우 쿼리 로그 활성화 (2초 이상)
+# - UTF-8MB4 문자셋 강제 설정 (인코딩 문제 해결)
+# - 클라이언트 handshake 비활성화 (인코딩 일관성 보장)
+# - InnoDB 최적화 설정 (파일별 테이블, 트랜잭션 로그 최적화)
+#
+# Redis:
+# - 최대 메모리: 256MB
+# - LRU 정책으로 자동 정리
+# - AOF 지속성 설정
+# - 스냅샷 백업 설정
+#
+# TMS App:
+# - 헬스체크 활성화
+# - 로그 및 캐시 디렉터리 마운트
+# - 환경변수 기반 설정 관리
+#
+# =============================================================================
+# 🔧 데이터베이스 인코딩 문제 해결
+# =============================================================================
+#
+# 이 설정은 한글 인코딩 문제를 완전히 해결합니다:
+#
+# 1. UTF-8MB4 강제 설정:
+#    - character-set-server=utf8mb4
+#    - collation-server=utf8mb4_unicode_ci
+#    - init-connect='SET NAMES utf8mb4'
+#
+# 2. Enum 값 표준화:
+#    - VehicleType: TOP_CAR, CARGO, OTHER (영문 대문자)
+#    - VehicleStatus: ACTIVE, INACTIVE, MAINTENANCE, IN_DELIVERY (영문 대문자)
+#    - OrderStatus: pending, assigned, in_progress, completed, cancelled (영문 소문자)
+#
+# 3. 초기화 스크립트 순서:
+#    - 01-schema.sql (테이블 스키마 생성)
+#    - 02-create_test_data_500.sql (각 센터당 500개 주문, 총 3,000개 테스트 데이터)
+#    - 03-fix_enum_data.sql (enum 값 표준화 및 검증)
+#
+# 이제 'ê¸°íƒ€', 'ì¹´ê³ ' 같은 깨진 문자는 더 이상 발생하지 않습니다!
+#
+# =============================================================================
